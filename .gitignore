@@ -1,0 +1,59 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build output
+dist/
+dist-ssr/
+build/
+*.local
+
+# Environment / secrets - never commit these
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.pem
+*.key
+
+# AWS Amplify generated + credentials
+amplify_outputs*.json
+amplifyconfiguration*.json
+.amplify/
+amplify/.attributes.json
+amplify/#current-cloud-backend
+amplify/backend/amplify-meta.json
+amplify/team-provider-info.json
+.aws/
+aws-exports.js
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+logs/
+*.log
+
+# Test / cache
+coverage/
+.vitest/
+.eslintcache
+*.tsbuildinfo
+.cache/
+
+# Local verification output
+tsc-out.txt
+tscheck*.log
+test*.log
+build*.log
