@@ -28,7 +28,10 @@ import {
   validateTopic,
   LIMITS,
 } from '../../../../shared/domain/rules';
-import { isValidSubjectId, resolveSubjects } from '../../../../shared/domain/subjects';
+import { isValidSubjectId } from '../../../../shared/domain/subjects';
+// Single shared implementation, so the demo, Amplify and REST backends cannot
+// disagree about what a tutor listing looks like.
+import { buildListing } from '../../../../shared/domain/listing';
 import type {
   AppNotification,
   AvailabilitySlot,
@@ -36,7 +39,6 @@ import type {
   NotificationType,
   Review,
   SessionView,
-  TutorListing,
   TutorProfile,
   UserProfile,
 } from '../../../../shared/domain/types';
@@ -143,43 +145,6 @@ function pushNotification(
     read: false,
     createdAt: new Date().toISOString(),
   });
-}
-
-/**
- * Materialises the canonical listing shape. Both backends build `TutorListing`
- * here-equivalent logic, which is how the card and the profile page are guaranteed
- * to show the same rating, rate and subjects (AC-15).
- */
-export function buildListing(
-  profile: TutorProfile,
-  slots: AvailabilitySlot[],
-  now: Date,
-): TutorListing {
-  const futureOpen = slots
-    .filter(
-      (slot) =>
-        slot.tutorProfileId === profile.id &&
-        slot.status === 'OPEN' &&
-        Date.parse(slot.startAt) > now.getTime(),
-    )
-    .sort((a, b) => Date.parse(a.startAt) - Date.parse(b.startAt));
-
-  const weekdays = [...new Set(futureOpen.map((slot) => new Date(slot.startAt).getDay()))].sort();
-
-  return {
-    tutorProfile: profile,
-    user: {
-      id: profile.userId,
-      displayName: profile.displayName,
-      institution: profile.institution ?? null,
-    },
-    subjects: resolveSubjects(profile.subjectIds),
-    subjectIds: profile.subjectIds,
-    levels: profile.levels,
-    openSlotCount: futureOpen.length,
-    availableWeekdays: weekdays,
-    nextAvailableAt: futureOpen[0]?.startAt ?? null,
-  };
 }
 
 export const localBackend: Backend = {

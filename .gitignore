@@ -57,3 +57,8 @@ tsc-out.txt
 tscheck*.log
 test*.log
 build*.log
+r1-tsc.log
+
+# Lambda / frontend deployment artifacts
+dist-lambda/
+dist-frontend.zip

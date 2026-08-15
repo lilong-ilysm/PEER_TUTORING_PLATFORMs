@@ -78,7 +78,7 @@ export interface SignUpResult {
 }
 
 export interface Backend {
-  readonly kind: 'amplify' | 'local';
+  readonly kind: 'rest' | 'amplify' | 'local';
 
   // --- Authentication -----------------------------------------------------
   getCurrentUser(): Promise<AuthUser | null>;

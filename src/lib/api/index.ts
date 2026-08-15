@@ -13,10 +13,21 @@ let backendPromise: Promise<Backend> | null = null;
 
 export function getBackend(): Promise<Backend> {
   if (!backendPromise) {
-    backendPromise =
-      DATA_MODE === 'amplify'
-        ? import('./amplify/amplifyBackend').then((module) => module.amplifyBackend)
-        : import('./local/localBackend').then((module) => module.localBackend);
+    switch (DATA_MODE) {
+      case 'rest':
+        backendPromise = import('./rest/restBackend').then((module) => module.restBackend);
+        break;
+      case 'amplify':
+        backendPromise = import('./amplify/amplifyBackend').then(
+          (module) => module.amplifyBackend,
+        );
+        break;
+      default:
+        backendPromise = import('./local/localBackend').then(
+          (module) => module.localBackend,
+        );
+        break;
+    }
   }
   return backendPromise;
 }

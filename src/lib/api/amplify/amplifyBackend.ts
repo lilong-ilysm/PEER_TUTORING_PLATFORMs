@@ -37,7 +37,8 @@ import {
   assertSlotDeletable,
   LIMITS,
 } from '../../../../shared/domain/rules';
-import { isValidSubjectId, resolveSubjects } from '../../../../shared/domain/subjects';
+import { isValidSubjectId } from '../../../../shared/domain/subjects';
+import { buildListing } from '../../../../shared/domain/listing';
 import type {
   AcademicLevel,
   AppNotification,
@@ -423,38 +424,6 @@ async function listAll<T>(
   } while (token && guard < 20);
 
   return items;
-}
-
-function buildListing(
-  profile: TutorProfile,
-  slots: AvailabilitySlot[],
-  now: Date,
-): TutorListing {
-  const futureOpen = slots
-    .filter(
-      (slot) =>
-        slot.tutorProfileId === profile.id &&
-        slot.status === 'OPEN' &&
-        Date.parse(slot.startAt) > now.getTime(),
-    )
-    .sort((a, b) => Date.parse(a.startAt) - Date.parse(b.startAt));
-
-  return {
-    tutorProfile: profile,
-    user: {
-      id: profile.userId,
-      displayName: profile.displayName,
-      institution: profile.institution ?? null,
-    },
-    subjects: resolveSubjects(profile.subjectIds),
-    subjectIds: profile.subjectIds,
-    levels: profile.levels,
-    openSlotCount: futureOpen.length,
-    availableWeekdays: [
-      ...new Set(futureOpen.map((slot) => new Date(slot.startAt).getDay())),
-    ].sort(),
-    nextAvailableAt: futureOpen[0]?.startAt ?? null,
-  };
 }
 
 // ---------------------------------------------------------------------------

@@ -16,21 +16,57 @@ const outputsEntry = Object.values(outputModules)[0];
 
 export const amplifyOutputs: Record<string, unknown> | null = outputsEntry?.default ?? null;
 
-export type DataMode = 'amplify' | 'local';
+/**
+ * REST backend configuration.
+ *
+ * Used by the API Gateway + Lambda + DynamoDB deployment (`infra/peerlearn.yaml`),
+ * which exists because AWS Amplify Gen 2 cannot be deployed in an AWS Academy
+ * Learner Lab: Gen 2 requires `iam:CreateRole`, which that environment denies.
+ *
+ * All three values are public by nature. A Cognito user pool id and app client id
+ * are designed to be shipped in a browser bundle; they are identifiers, not
+ * credentials. There is deliberately no identity pool, so the browser never holds
+ * AWS credentials at all.
+ */
+export const REST_CONFIG = {
+  apiBaseUrl: (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, ''),
+  userPoolId: import.meta.env.VITE_COGNITO_USER_POOL_ID ?? '',
+  userPoolClientId: import.meta.env.VITE_COGNITO_CLIENT_ID ?? '',
+} as const;
+
+const restConfigured = Boolean(
+  REST_CONFIG.apiBaseUrl && REST_CONFIG.userPoolId && REST_CONFIG.userPoolClientId,
+);
+
+export type DataMode = 'rest' | 'amplify' | 'local';
 
 function resolveDataMode(): DataMode {
   const requested = (import.meta.env.VITE_DATA_MODE ?? 'auto').toLowerCase();
 
+  if (requested === 'rest') {
+    if (!restConfigured) {
+      // Failing loudly beats silently serving demo data from something that looks
+      // like a production build.
+      throw new Error(
+        'VITE_DATA_MODE=rest but VITE_API_BASE_URL, VITE_COGNITO_USER_POOL_ID and VITE_COGNITO_CLIENT_ID are not all set. See infra/peerlearn.yaml outputs.',
+      );
+    }
+    return 'rest';
+  }
+
   if (requested === 'amplify') {
     if (!amplifyOutputs) {
-      // Failing loudly beats silently falling back to demo data in production.
       throw new Error(
         'VITE_DATA_MODE=amplify but amplify_outputs.json is missing. Run `npx ampx sandbox` or deploy the backend first.',
       );
     }
     return 'amplify';
   }
+
   if (requested === 'local') return 'local';
+
+  // auto: prefer a configured REST backend, then Amplify, then demo data.
+  if (restConfigured) return 'rest';
   return amplifyOutputs ? 'amplify' : 'local';
 }
 

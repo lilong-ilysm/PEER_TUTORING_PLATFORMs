@@ -16,7 +16,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "amplify:sandbox": "ampx sandbox",
-    "amplify:generate": "ampx generate outputs"
+    "amplify:generate": "ampx generate outputs",
+    "build:lambda": "esbuild backend/handler.ts --bundle --platform=node --target=node20 --format=cjs --outfile=dist-lambda/index.js --external:@aws-sdk/*",
+    "package:lambda": "npm run build:lambda && node scripts/package-lambda.mjs",
+    "deploy:lambda": "node scripts/deploy-lambda.mjs",
+    "deploy:frontend": "node scripts/deploy-frontend.mjs"
   },
   "dependencies": {
     "aws-amplify": "^6.6.6",
@@ -27,6 +31,8 @@
   "devDependencies": {
     "@aws-amplify/backend": "^1.7.0",
     "@aws-amplify/backend-cli": "^1.4.2",
+    "@aws-sdk/client-dynamodb": "^3.699.0",
+    "@aws-sdk/lib-dynamodb": "^3.699.0",
     "@testing-library/dom": "^10.4.0",
     "@testing-library/react": "^16.0.1",
     "@testing-library/user-event": "^14.5.2",

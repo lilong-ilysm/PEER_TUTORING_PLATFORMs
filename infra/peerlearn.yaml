@@ -1,0 +1,597 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+# =============================================================================
+# PeerLearn backend for AWS Academy Learner Lab
+# =============================================================================
+#
+# WHY THIS EXISTS
+# ---------------
+# The project's original backend is AWS Amplify Gen 2 (see `amplify/`). It cannot
+# be deployed in an AWS Academy Learner Lab because Amplify Gen 2 requires
+# `iam:CreateRole`, which the Learner Lab denies explicitly. Three independent
+# things need role creation there:
+#
+#   1. The CDK bootstrap roles (cdk-hnb659fds-*).
+#   2. The Amplify Hosting service role used for backend deployments.
+#   3. The backend stack itself: a Cognito Identity Pool cannot exist without
+#      authenticated/unauthenticated IAM roles, and Lambda needs an execution role.
+#
+# THE ONE RULE THIS TEMPLATE OBEYS
+# --------------------------------
+# It declares ZERO IAM resources. Not one AWS::IAM::Role, Policy or InstanceProfile.
+# The Lambda execution role is the pre-existing Learner Lab `LabRole`, referenced by
+# ARN and passed with iam:PassRole.
+#
+# Two design consequences follow from that constraint:
+#
+#   * Authentication uses a Cognito USER POOL ONLY. There is deliberately no
+#     Identity Pool, because an Identity Pool mandates two IAM roles. The user pool
+#     issues JWTs, API Gateway validates them natively, and no AWS credentials are
+#     ever handed to the browser.
+#
+#   * API Gateway uses proxy integration, so invoking Lambda relies on a Lambda
+#     resource-based policy (AWS::Lambda::Permission) rather than an integration
+#     role.
+#
+# Deploy with `aws cloudformation deploy` WITHOUT --capabilities, because there is
+# nothing here that needs CAPABILITY_IAM. If CloudFormation ever asks you for that
+# capability, something has been added that will fail in Learner Lab.
+# =============================================================================
+
+Description: >-
+  PeerLearn peer tutoring backend. Cognito User Pool, DynamoDB, Lambda and API
+  Gateway. Creates no IAM roles; reuses the Learner Lab LabRole.
+
+Parameters:
+  LabRoleArn:
+    Type: String
+    Default: arn:aws:iam::861601949054:role/LabRole
+    Description: >-
+      ARN of the pre-existing Learner Lab execution role. This is PASSED to Lambda,
+      never created. Confirmed present via `aws iam list-roles`.
+
+  StageName:
+    Type: String
+    Default: prod
+    Description: API Gateway stage name.
+
+  AllowedOrigin:
+    Type: String
+    Default: '*'
+    Description: >-
+      CORS origin. Defaults to '*' so the app works before the Amplify domain is
+      known. After the first frontend deploy, redeploy this stack with your real
+      https://<branch>.<appid>.amplifyapp.com origin to tighten it.
+
+Resources:
+  # ---------------------------------------------------------------------------
+  # Authentication: Cognito User Pool (NO Identity Pool - see header)
+  # ---------------------------------------------------------------------------
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub '${AWS::StackName}-users'
+      # Email is the sign-in identifier, so Cognito itself guarantees uniqueness.
+      # That is what satisfies "duplicate email is rejected" without a race.
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          # These four settings mirror `passwordProblems()` in
+          # shared/domain/rules.ts EXACTLY. If they drift, a user passes client
+          # validation and is then rejected by Cognito with a confusing error.
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Required: true
+          Mutable: true
+        - Name: name
+          AttributeDataType: String
+          Required: true
+          Mutable: true
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      UserPoolTags:
+        Project: PeerLearn
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub '${AWS::StackName}-web'
+      UserPoolId: !Ref UserPool
+      # No secret: this client runs in a browser and could not keep one.
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      # Makes Cognito return an identical error whether or not the account exists,
+      # so the login form cannot be used to enumerate registered emails.
+      PreventUserExistenceErrors: ENABLED
+      AccessTokenValidity: 60
+      IdTokenValidity: 60
+      RefreshTokenValidity: 30
+      TokenValidityUnits:
+        AccessToken: minutes
+        IdToken: minutes
+        RefreshToken: days
+
+  # ---------------------------------------------------------------------------
+  # Data: one table per entity.
+  #
+  # PAY_PER_REQUEST throughout: no capacity to plan, and it costs nothing when
+  # idle, which matters for a lab account.
+  # ---------------------------------------------------------------------------
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-Users'
+      BillingMode: PAY_PER_REQUEST
+      # id is the Cognito `sub`, so identity and primary key are the same thing
+      # and every ownership check is a direct key lookup.
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+
+  TutorProfilesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-TutorProfiles'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: publishedFlag
+          AttributeType: S
+        - AttributeName: createdAt
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: byUserId
+          KeySchema:
+            - AttributeName: userId
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        # A SPARSE index. The Lambda only writes `publishedFlag` when a profile is
+        # genuinely discoverable (published AND has a subject AND has a bio), so
+        # querying this index cannot return a half-configured tutor. That enforces
+        # the discoverability rule at the storage layer instead of by convention,
+        # and avoids scanning the table on every search.
+        - IndexName: byPublished
+          KeySchema:
+            - AttributeName: publishedFlag
+              KeyType: HASH
+            - AttributeName: createdAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  SlotsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-Slots'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+        - AttributeName: tutorProfileId
+          AttributeType: S
+        - AttributeName: tutorUserId
+          AttributeType: S
+        - AttributeName: startAt
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: byTutorProfile
+          KeySchema:
+            - AttributeName: tutorProfileId
+              KeyType: HASH
+            - AttributeName: startAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: byTutorUser
+          KeySchema:
+            - AttributeName: tutorUserId
+              KeyType: HASH
+            - AttributeName: startAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  SessionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-Sessions'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+        - AttributeName: studentUserId
+          AttributeType: S
+        - AttributeName: tutorUserId
+          AttributeType: S
+        - AttributeName: startAt
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: byStudent
+          KeySchema:
+            - AttributeName: studentUserId
+              KeyType: HASH
+            - AttributeName: startAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: byTutor
+          KeySchema:
+            - AttributeName: tutorUserId
+              KeyType: HASH
+            - AttributeName: startAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  ReviewsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-Reviews'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+        - AttributeName: tutorProfileId
+          AttributeType: S
+        - AttributeName: sessionId
+          AttributeType: S
+        - AttributeName: createdAt
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: byTutorProfile
+          KeySchema:
+            - AttributeName: tutorProfileId
+              KeyType: HASH
+            - AttributeName: createdAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        # Used to enforce one-review-per-session.
+        - IndexName: bySession
+          KeySchema:
+            - AttributeName: sessionId
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+
+  MessagesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-Messages'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+        - AttributeName: sessionId
+          AttributeType: S
+        - AttributeName: createdAt
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: bySession
+          KeySchema:
+            - AttributeName: sessionId
+              KeyType: HASH
+            - AttributeName: createdAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  NotificationsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-Notifications'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: createdAt
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: byUser
+          KeySchema:
+            - AttributeName: userId
+              KeyType: HASH
+            - AttributeName: createdAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  # ---------------------------------------------------------------------------
+  # Compute: a single Lambda with an internal router.
+  #
+  # One function rather than one per route: the business rules span entities and
+  # live in one shared module, so splitting them across functions would mean
+  # duplicating the rule imports for no benefit at this scale.
+  #
+  # `Role` PASSES the pre-existing LabRole. This is the only IAM interaction in
+  # the whole template.
+  # ---------------------------------------------------------------------------
+  ApiFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-api'
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Role: !Ref LabRoleArn
+      Timeout: 29 # API Gateway's own integration limit is 29s; matching avoids a confusing 504.
+      MemorySize: 512
+      Environment:
+        Variables:
+          TABLE_USERS: !Ref UsersTable
+          TABLE_TUTOR_PROFILES: !Ref TutorProfilesTable
+          TABLE_SLOTS: !Ref SlotsTable
+          TABLE_SESSIONS: !Ref SessionsTable
+          TABLE_REVIEWS: !Ref ReviewsTable
+          TABLE_MESSAGES: !Ref MessagesTable
+          TABLE_NOTIFICATIONS: !Ref NotificationsTable
+          ALLOWED_ORIGIN: !Ref AllowedOrigin
+      Code:
+        # Placeholder only. The real bundle is uploaded afterwards with
+        # `npm run deploy:lambda`, because the actual handler is far larger than
+        # the 4096-character limit CloudFormation allows for inline code.
+        ZipFile: |
+          exports.handler = async () => ({
+            statusCode: 503,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              code: 'NOT_DEPLOYED',
+              message: 'Placeholder. Run: npm run deploy:lambda'
+            })
+          });
+
+  # ---------------------------------------------------------------------------
+  # API Gateway
+  # ---------------------------------------------------------------------------
+  RestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub '${AWS::StackName}-api'
+      Description: PeerLearn REST API
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  Authorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      Name: CognitoUserPool
+      RestApiId: !Ref RestApi
+      Type: COGNITO_USER_POOLS
+      IdentitySource: method.request.header.Authorization
+      ProviderARNs:
+        - !GetAtt UserPool.Arn
+
+  # --- /public/* : no authentication -----------------------------------------
+  # Browsing tutors, availability and reviews is open, so a visitor can evaluate
+  # the platform before creating an account. Keeping the unauthenticated surface
+  # on its own path prefix makes it auditable at a glance: anything that must
+  # never be public simply is not served here.
+  PublicResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref RestApi
+      ParentId: !GetAtt RestApi.RootResourceId
+      PathPart: public
+
+  PublicProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref RestApi
+      ParentId: !Ref PublicResource
+      PathPart: '{proxy+}'
+
+  PublicProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref PublicProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+
+  # --- /api/* : Cognito-authenticated ---------------------------------------
+  ApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref RestApi
+      ParentId: !GetAtt RestApi.RootResourceId
+      PathPart: api
+
+  ApiProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref RestApi
+      ParentId: !Ref ApiResource
+      PathPart: '{proxy+}'
+
+  ApiProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref ApiProxyResource
+      HttpMethod: ANY
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref Authorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+
+  # --- CORS preflight -------------------------------------------------------
+  # A browser preflight is sent WITHOUT an Authorization header, so it would be
+  # rejected by the Cognito authorizer. These OPTIONS methods are therefore
+  # deliberately unauthenticated and answered by a MOCK integration, which never
+  # reaches Lambda.
+  ApiOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref ApiProxyResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: !Sub "'${AllowedOrigin}'"
+              method.response.header.Access-Control-Max-Age: "'7200'"
+            ResponseTemplates:
+              application/json: ''
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Access-Control-Max-Age: true
+
+  PublicOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref PublicProxyResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: !Sub "'${AllowedOrigin}'"
+              method.response.header.Access-Control-Max-Age: "'7200'"
+            ResponseTemplates:
+              application/json: ''
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Access-Control-Max-Age: true
+
+  # Without these, an authorizer rejection reaches the browser as an opaque CORS
+  # failure instead of a readable 401, which is painful to debug.
+  Unauthorized4xxResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref RestApi
+      ResponseType: DEFAULT_4XX
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: !Sub "'${AllowedOrigin}'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+
+  Default5xxResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref RestApi
+      ResponseType: DEFAULT_5XX
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: !Sub "'${AllowedOrigin}'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+
+  # Resource-based policy, NOT an integration role. This is how API Gateway is
+  # allowed to invoke the function without creating any IAM role.
+  ApiFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ApiFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*/*'
+
+  Deployment:
+    Type: AWS::ApiGateway::Deployment
+    # Every method must exist before the deployment snapshot is taken, or the
+    # stage will serve an incomplete API.
+    DependsOn:
+      - PublicProxyMethod
+      - PublicOptionsMethod
+      - ApiProxyMethod
+      - ApiOptionsMethod
+    Properties:
+      RestApiId: !Ref RestApi
+      Description: PeerLearn API deployment
+
+  Stage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref RestApi
+      DeploymentId: !Ref Deployment
+      StageName: !Ref StageName
+      # Access logging and execution logging are deliberately NOT configured.
+      # Both require an account-level API Gateway CloudWatch role, and creating
+      # that role is exactly what Learner Lab forbids. Lambda still logs to
+      # CloudWatch normally, which is where you debug from.
+
+Outputs:
+  ApiBaseUrl:
+    Description: Set this as VITE_API_BASE_URL in the frontend build.
+    Value: !Sub 'https://${RestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${StageName}'
+
+  UserPoolId:
+    Description: Set this as VITE_COGNITO_USER_POOL_ID.
+    Value: !Ref UserPool
+
+  UserPoolClientId:
+    Description: Set this as VITE_COGNITO_CLIENT_ID.
+    Value: !Ref UserPoolClient
+
+  LambdaFunctionName:
+    Description: Target for `npm run deploy:lambda`.
+    Value: !Ref ApiFunction
+
+  Region:
+    Value: !Ref AWS::Region

@@ -8,6 +8,13 @@ Lambda).
 
 ---
 
+> **Deploying in AWS Academy Learner Lab?** Use
+> **[docs/04-learner-lab-deployment.md](docs/04-learner-lab-deployment.md)**.
+> The Amplify Gen 2 backend in `amplify/` **cannot** be deployed there: Gen 2
+> requires `iam:CreateRole`, which the Learner Lab denies explicitly. The REST
+> backend in `infra/` + `backend/` exists for exactly that case and creates no IAM
+> roles at all.
+
 ## Quick start
 
 ```bash
@@ -20,6 +27,21 @@ Open http://localhost:5173.
 With no AWS backend configured the app runs in **demo mode**: data is persisted in
 your browser's `localStorage` and the UI shows a permanent "Demo data" banner. This
 exists so the product can be reviewed end to end without an AWS account.
+
+## Three backends, one interface
+
+`src/lib/api/contract.ts` defines a single `Backend` interface. Three
+implementations satisfy it, chosen at runtime by `src/lib/config.ts`:
+
+| Mode | Implementation | Infrastructure | Use |
+|---|---|---|---|
+| `local` | `local/localBackend.ts` | none, browser storage | Development and review with no AWS account |
+| `rest` | `rest/restBackend.ts` | API Gateway, Lambda, DynamoDB, Cognito user pool | **AWS Academy Learner Lab** |
+| `amplify` | `amplify/amplifyBackend.ts` | Amplify Gen 2: Cognito, AppSync, DynamoDB, Lambda | Unrestricted AWS accounts |
+
+All three call the same business rules in `shared/domain/rules.ts`, so none of them
+can be more permissive than the others. Swapping between them required no change to
+any component, page, route or React context.
 
 ### Demo accounts
 
