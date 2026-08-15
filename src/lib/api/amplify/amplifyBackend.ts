@@ -47,7 +47,6 @@ import type {
   Review,
   SessionMode,
   SessionView,
-  TutorListing,
   TutorProfile,
   UserProfile,
   UserRole,
