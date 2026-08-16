@@ -237,7 +237,10 @@ export function DashboardAvailabilityPage() {
                     <Card key={slot.id} as="li" className="list-none">
                       <CardBody className="flex flex-wrap items-center justify-between gap-3 p-3.5">
                         <div className="min-w-0">
-                          <p className="font-medium text-ink-900">
+                          {/* Same nowrap + tabular-nums treatment as the public
+                              availability picker, so times read identically on both
+                              sides of the product. */}
+                          <p className="whitespace-nowrap font-medium tabular-nums text-ink-900">
                             {formatSlotRange(slot.startAt, slot.endAt)}
                           </p>
                           <p className="text-sm text-ink-500">

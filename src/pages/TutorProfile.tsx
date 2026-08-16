@@ -5,14 +5,10 @@ import { useAsync } from '../lib/useAsync';
 import { computeRatingAggregate } from '../../shared/domain/rules';
 import { LEVEL_LABELS, MODE_LABELS } from '../../shared/domain/subjects';
 import type { AvailabilitySlot } from '../../shared/domain/types';
-import {
-  formatRatePerHour,
-  formatRelativeTimeAgo,
-  pluralise,
-} from '../lib/utils';
+import { formatRatePerHour, formatRelativeTimeAgo } from '../lib/utils';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
-import { Button, ButtonLink } from '../components/ui/Button';
+import { ButtonLink } from '../components/ui/Button';
 import {
   Avatar,
   Badge,
@@ -156,20 +152,36 @@ export function TutorProfilePage() {
         </CardBody>
       </Card>
 
-      <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
-        {/* --- Main column --- */}
-        <div className="min-w-0 space-y-6">
-          <section aria-labelledby="about-heading">
-            <SectionHeading title="About" id="about-heading" />
-            <Card>
-              <CardBody>
-                <p className="user-text whitespace-pre-line text-ink-800">{profile.bio}</p>
-              </CardBody>
-            </Card>
-          </section>
+      {/*
+        One grid, two behaviours.
 
-          <section aria-labelledby="subjects-heading">
-            <SectionHeading title="Subjects and levels" id="subjects-heading" />
+        Mobile is a single column ordered About -> Subjects -> Availability ->
+        Reviews, so the primary action sits directly under the tutor's details
+        instead of below every review. Previously availability lived in an `aside`
+        that came last in the DOM, which meant a phone user had to scroll past the
+        entire review list to find the one thing they came to do.
+
+        Desktop places the same element in a sticky right-hand column via explicit
+        row/column starts. The availability card is rendered ONCE either way.
+      */}
+      <div className="mt-6 flex flex-col gap-6 lg:grid lg:grid-cols-[minmax(0,1fr)_21rem] lg:items-start">
+        <section
+          aria-labelledby="about-heading"
+          className="order-1 min-w-0 lg:col-start-1 lg:row-start-1"
+        >
+          <SectionHeading title="About" id="about-heading" />
+          <Card>
+            <CardBody>
+              <p className="user-text whitespace-pre-line text-ink-800">{profile.bio}</p>
+            </CardBody>
+          </Card>
+        </section>
+
+        <section
+          aria-labelledby="subjects-heading"
+          className="order-2 min-w-0 lg:col-start-1 lg:row-start-2"
+        >
+          <SectionHeading title="Subjects and levels" id="subjects-heading" />
             <Card>
               <CardBody className="space-y-4">
                 <div>
@@ -194,20 +206,23 @@ export function TutorProfilePage() {
                     ))}
                   </ul>
                 </div>
-              </CardBody>
-            </Card>
-          </section>
+            </CardBody>
+          </Card>
+        </section>
 
-          <section aria-labelledby="reviews-heading">
-            <SectionHeading
-              title={`Reviews${displayRating.ratingCount > 0 ? ` (${displayRating.ratingCount})` : ''}`}
-              id="reviews-heading"
-              description={
-                displayRating.ratingCount > 0
-                  ? 'Left only by students who completed a session with this tutor.'
-                  : undefined
-              }
-            />
+        <section
+          aria-labelledby="reviews-heading"
+          className="order-4 min-w-0 lg:col-start-1 lg:row-start-3"
+        >
+          <SectionHeading
+            title={`Reviews${displayRating.ratingCount > 0 ? ` (${displayRating.ratingCount})` : ''}`}
+            id="reviews-heading"
+            description={
+              displayRating.ratingCount > 0
+                ? 'Left only by students who completed a session with this tutor.'
+                : undefined
+            }
+          />
 
             {reviewsState.loading ? (
               <ListSkeleton rows={2} />
@@ -241,75 +256,72 @@ export function TutorProfilePage() {
                 ))}
               </ul>
             )}
-          </section>
-        </div>
+        </section>
 
-        {/* --- Booking sidebar. Sticky on desktop. --- */}
-        <aside className="min-w-0 scroll-mt-24" id="availability-anchor">
-          <div className="lg:sticky lg:top-24">
-            <Card>
-              <CardBody>
+        {/*
+          Third on mobile (directly after the tutor's details), sticky right-hand
+          column from `lg` up. `row-span-3` gives the sticky element room to travel
+          alongside the whole left column.
+        */}
+        <aside
+          id="availability"
+          className="order-3 min-w-0 scroll-mt-24 lg:col-start-2 lg:row-span-3 lg:row-start-1 lg:self-start lg:sticky lg:top-24"
+        >
+          <Card>
+            <CardBody>
+              <div className="flex items-baseline justify-between gap-2">
                 <h2 className="flex items-center gap-2 text-lg">
                   <span className="text-ink-400" aria-hidden="true">
                     <CalendarIcon />
                   </span>
                   Availability
                 </h2>
+              </div>
 
-                {isOwnProfile ? (
-                  <div className="mt-3 rounded-lg border border-ink-200 bg-ink-50 p-3 text-sm text-ink-700">
-                    <p>This is how your profile looks to students.</p>
-                    <ButtonLink
-                      to="/dashboard/availability"
-                      variant="secondary"
-                      size="sm"
-                      className="mt-2"
-                    >
-                      Manage availability
-                    </ButtonLink>
-                  </div>
-                ) : null}
-
-                <div className="mt-3">
-                  {slotsState.loading ? (
-                    <div className="space-y-2">
-                      <Skeleton className="h-4 w-24" />
-                      <div className="grid grid-cols-2 gap-2">
-                        <Skeleton className="h-14" />
-                        <Skeleton className="h-14" />
-                        <Skeleton className="h-14" />
-                        <Skeleton className="h-14" />
-                      </div>
-                    </div>
-                  ) : slotsState.error ? (
-                    <ErrorState message={slotsState.error} onRetry={slotsState.reload} />
-                  ) : (
-                    <AvailabilityPicker
-                      slots={slotsState.data ?? []}
-                      selectedSlotId={selectedSlot?.id ?? null}
-                      onSelect={handleBookIntent}
-                      disabled={isOwnProfile}
-                    />
-                  )}
+              {isOwnProfile ? (
+                <div className="mt-3 rounded-lg border border-ink-200 bg-ink-50 p-3 text-sm text-ink-700">
+                  <p>This is how your profile looks to students.</p>
+                  <ButtonLink
+                    to="/dashboard/availability"
+                    variant="secondary"
+                    size="sm"
+                    className="mt-2"
+                  >
+                    Manage availability
+                  </ButtonLink>
                 </div>
+              ) : null}
 
-                {!isOwnProfile && (slotsState.data?.length ?? 0) > 0 ? (
-                  <p className="mt-3 text-sm text-ink-600">
-                    {isAuthenticated
-                      ? 'Pick a time to send a request. Your tutor confirms before it is scheduled.'
-                      : 'Pick a time to continue. You will be asked to sign in.'}
-                  </p>
-                ) : null}
-              </CardBody>
-            </Card>
+              <div className="mt-3">
+                {slotsState.loading ? (
+                  // Skeleton mirrors the new row layout so nothing jumps on load.
+                  <div className="space-y-2">
+                    <Skeleton className="h-4 w-32" />
+                    <Skeleton className="h-14 rounded-xl" />
+                    <Skeleton className="h-14 rounded-xl" />
+                    <Skeleton className="h-14 rounded-xl" />
+                  </div>
+                ) : slotsState.error ? (
+                  <ErrorState message={slotsState.error} onRetry={slotsState.reload} />
+                ) : (
+                  <AvailabilityPicker
+                    slots={slotsState.data ?? []}
+                    selectedSlotId={selectedSlot?.id ?? null}
+                    onSelect={handleBookIntent}
+                    disabled={isOwnProfile}
+                  />
+                )}
+              </div>
 
-            {listing.openSlotCount > 0 ? (
-              <p className="mt-3 text-center text-sm text-ink-600">
-                {listing.openSlotCount} open{' '}
-                {pluralise(listing.openSlotCount, 'time')} in the next few weeks
-              </p>
-            ) : null}
-          </div>
+              {!isOwnProfile && listing.openSlotCount > 0 ? (
+                <p className="mt-3 border-t border-ink-200 pt-3 text-sm text-ink-600">
+                  {isAuthenticated
+                    ? 'Pick a time to send a request. Nothing is scheduled until the tutor confirms.'
+                    : 'Pick a time to continue. You will be asked to sign in first.'}
+                </p>
+              ) : null}
+            </CardBody>
+          </Card>
         </aside>
       </div>
 
@@ -332,45 +344,12 @@ export function TutorProfilePage() {
       />
 
       {/*
-        Mobile action bar, so booking is reachable without scrolling back up.
-        Offset above the bottom tab bar when signed in, otherwise the two fixed
-        bars would sit on top of each other.
+        The fixed mobile "See times" bar that used to live here has been removed.
+        It existed only because availability was the last thing on the page; now
+        that availability sits directly below the tutor's details on mobile, the bar
+        was redundant, and it also had to fight the dashboard tab bar for the same
+        strip of screen.
       */}
-      {!isOwnProfile && listing.openSlotCount > 0 ? (
-        <div
-          className={
-            isAuthenticated
-              ? 'fixed inset-x-0 bottom-[4.5rem] z-30 border-t border-ink-200 bg-white p-3 lg:hidden'
-              : 'fixed inset-x-0 bottom-0 z-30 border-t border-ink-200 bg-white p-3 pb-safe lg:hidden'
-          }
-        >
-          <div className="container-page flex items-center gap-3">
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium text-ink-900">
-                {formatRatePerHour(profile.hourlyRate, profile.currency)}
-              </p>
-              <p className="truncate text-xs text-ink-600">
-                {listing.openSlotCount} open {pluralise(listing.openSlotCount, 'time')}
-              </p>
-            </div>
-            <Button
-              onClick={() => {
-                document
-                  .getElementById('availability-anchor')
-                  ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-              }}
-              className="shrink-0"
-            >
-              See times
-            </Button>
-          </div>
-        </div>
-      ) : null}
-
-      {/* Clears the mobile action bar so it never covers the last review. */}
-      {!isOwnProfile && listing.openSlotCount > 0 ? (
-        <div className="h-24 lg:hidden" aria-hidden="true" />
-      ) : null}
     </div>
   );
 }

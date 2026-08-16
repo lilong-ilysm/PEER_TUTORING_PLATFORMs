@@ -1,22 +1,22 @@
 import { Link } from 'react-router-dom';
 import type { TutorListing } from '../../../shared/domain/types';
 import { LEVEL_LABELS, MODE_LABELS } from '../../../shared/domain/subjects';
-import {
-  cn,
-  formatDateTime,
-  formatRatePerHour,
-  pluralise,
-  truncate,
-} from '../../lib/utils';
+import { cn, formatDateTime, formatRate, pluralise } from '../../lib/utils';
 import { Avatar, Badge, Card, CardBody, Rating } from '../ui/primitives';
 import { ClockIcon, LocationIcon, VideoIcon } from '../ui/icons';
 
 /**
  * The tutor card.
  *
- * Renders straight from `TutorListing`, the same object the profile page uses. That
- * is the mechanism behind AC-15: the card cannot show a different rating or rate
- * from the profile because both read the same fields of the same record.
+ * Ordered to answer "why should I choose this tutor?" in the order a student
+ * actually asks it: who they are, whether they can be trusted, what they cover,
+ * when they are free, what it costs.
+ *
+ * Rendered straight from `TutorListing`, the same object the profile page uses, so
+ * the card and the profile cannot show different ratings, rates or subjects.
+ *
+ * Fields the data model does not have (course, year of study, profile photo) are
+ * deliberately absent rather than invented. `Avatar` falls back to initials.
  */
 export function TutorCard({ listing }: { listing: TutorListing }) {
   const { tutorProfile: profile, user, subjects, openSlotCount, nextAvailableAt } = listing;
@@ -28,11 +28,18 @@ export function TutorCard({ listing }: { listing: TutorListing }) {
       <VideoIcon />
     ) : null;
 
+  const hasAvailability = openSlotCount > 0 && Boolean(nextAvailableAt);
+
   return (
-    <Card as="article" className="flex h-full flex-col transition-shadow hover:shadow-pop">
-      <CardBody className="flex min-w-0 flex-1 flex-col gap-3">
+    <Card
+      as="article"
+      className="group flex h-full flex-col transition-shadow hover:shadow-pop"
+    >
+      <CardBody className="flex min-w-0 flex-1 flex-col gap-3.5">
+        {/* --- Identity --- */}
         <div className="flex items-start gap-3">
           <Avatar name={user.displayName} />
+
           <div className="min-w-0 flex-1">
             <h3 className="truncate text-base font-semibold text-ink-900">
               <Link
@@ -45,15 +52,22 @@ export function TutorCard({ listing }: { listing: TutorListing }) {
             {user.institution ? (
               <p className="truncate text-sm text-ink-500">{user.institution}</p>
             ) : null}
-          </div>
-          <div className="shrink-0 text-right">
-            <p className="font-semibold text-ink-900">
-              {formatRatePerHour(profile.hourlyRate, profile.currency)}
-            </p>
+            {/* Credibility immediately under the name, not buried at the bottom. */}
+            <div className="mt-1">
+              <Rating value={profile.ratingAvg} count={profile.ratingCount} />
+            </div>
           </div>
         </div>
 
-        <p className="user-text text-sm text-ink-700">{truncate(profile.headline, 110)}</p>
+        {/* --- What they cover --- */}
+        {/*
+          line-clamp rather than a JS character count: it adapts to the real column
+          width instead of guessing, so nothing is cut mid-word at one breakpoint
+          and left short at another.
+        */}
+        <p className="user-text line-clamp-2 text-sm leading-relaxed text-ink-700">
+          {profile.headline}
+        </p>
 
         <ul className="flex flex-wrap gap-1.5">
           {subjects.slice(0, 3).map((subject) => (
@@ -63,48 +77,54 @@ export function TutorCard({ listing }: { listing: TutorListing }) {
           ))}
           {subjects.length > 3 ? (
             <li>
-              <Badge>+{subjects.length - 3} more</Badge>
+              <Badge>
+                +{subjects.length - 3} more
+                <span className="sr-only"> subjects</span>
+              </Badge>
             </li>
           ) : null}
         </ul>
 
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-sm text-ink-600">
-          <span className="inline-flex items-center gap-1.5">
+          <span className="inline-flex min-w-0 items-center gap-1.5">
             {modeIcon ? (
-              <span className="text-base" aria-hidden="true">
+              <span className="shrink-0 text-base text-ink-400" aria-hidden="true">
                 {modeIcon}
               </span>
             ) : null}
-            {MODE_LABELS[profile.sessionMode]}
+            <span className="truncate">{MODE_LABELS[profile.sessionMode]}</span>
           </span>
-          <span aria-hidden="true" className="text-ink-300">
-            •
-          </span>
-          <span className="min-w-0 truncate">
-            {profile.levels.map((level) => LEVEL_LABELS[level]).join(', ')}
-          </span>
+          {profile.levels.length > 0 ? (
+            <>
+              <span aria-hidden="true" className="text-ink-300">
+                ·
+              </span>
+              <span className="min-w-0 truncate">
+                {profile.levels.map((level) => LEVEL_LABELS[level]).join(', ')}
+              </span>
+            </>
+          ) : null}
         </div>
 
+        {/* --- Availability and price, pinned to the bottom so cards align --- */}
         <div className="mt-auto space-y-3 pt-1">
-          <Rating value={profile.ratingAvg} count={profile.ratingCount} />
-
-          {/* Availability is stated only when it is real. */}
           <p
             className={cn(
-              'inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-sm',
-              openSlotCount > 0
+              'flex items-start gap-1.5 rounded-lg px-2.5 py-2 text-sm',
+              hasAvailability
                 ? 'bg-emerald-50 text-emerald-900'
                 : 'bg-ink-100 text-ink-600',
             )}
           >
-            <span className="text-base" aria-hidden="true">
+            <span className="mt-0.5 shrink-0 text-base" aria-hidden="true">
               <ClockIcon />
             </span>
-            {openSlotCount > 0 && nextAvailableAt ? (
+            {hasAvailability ? (
               <span className="min-w-0">
-                Next free {formatDateTime(nextAvailableAt)}
+                Next free{' '}
+                <span className="font-semibold">{formatDateTime(nextAvailableAt!)}</span>
                 <span className="sr-only">
-                  . {openSlotCount} open {pluralise(openSlotCount, 'slot')}
+                  . {openSlotCount} open {pluralise(openSlotCount, 'slot')} in total
                 </span>
               </span>
             ) : (
@@ -112,13 +132,28 @@ export function TutorCard({ listing }: { listing: TutorListing }) {
             )}
           </p>
 
-          <Link
-            to={`/tutors/${profile.id}`}
-            className="flex h-11 w-full items-center justify-center rounded-lg bg-primary-600 font-medium text-white transition-colors hover:bg-primary-700"
-          >
-            View profile
-            <span className="sr-only"> for {user.displayName}</span>
-          </Link>
+          <div className="flex items-center justify-between gap-3">
+            <p className="min-w-0">
+              {profile.hourlyRate === 0 ? (
+                <span className="font-semibold text-emerald-800">Free</span>
+              ) : (
+                <>
+                  <span className="text-lg font-semibold text-ink-900">
+                    {formatRate(profile.hourlyRate, profile.currency)}
+                  </span>
+                  <span className="text-sm text-ink-500"> / hour</span>
+                </>
+              )}
+            </p>
+
+            <Link
+              to={`/tutors/${profile.id}`}
+              className="inline-flex h-10 shrink-0 items-center justify-center rounded-lg bg-primary-600 px-4 text-sm font-medium text-white transition-colors hover:bg-primary-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
+            >
+              View profile
+              <span className="sr-only"> for {user.displayName}</span>
+            </Link>
+          </div>
         </div>
       </CardBody>
     </Card>

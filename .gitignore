@@ -52,12 +52,19 @@ coverage/
 *.tsbuildinfo
 .cache/
 
-# Local verification output
+# Local verification output (build/test logs and scratch files)
 tsc-out.txt
 tscheck*.log
 test*.log
 build*.log
 r1-tsc.log
+zbuild.log
+verify-build.txt
+gitstate.txt
+gs.txt
+b*-final.txt
+p0*.txt
+*.tmp.txt
 
 # Lambda / frontend deployment artifacts
 dist-lambda/

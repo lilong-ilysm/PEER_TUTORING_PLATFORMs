@@ -13,7 +13,10 @@ const DAY_MS = 86_400_000;
 
 export function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString(undefined, {
-    hour: '2-digit',
+    // `numeric` not `2-digit`: "3:00 PM" rather than "03:00 PM". The leading zero
+    // added ~8% to the width of every time range for no information, which was
+    // enough to make ranges wrap inside narrow containers.
+    hour: 'numeric',
     minute: '2-digit',
   });
 }
@@ -39,8 +42,25 @@ export function formatDateTime(iso: string): string {
   return `${formatDate(iso)}, ${formatTime(iso)}`;
 }
 
+/**
+ * A time range as one atomic string, e.g. "3:00 PM – 4:00 PM".
+ *
+ * The spaces around the en dash are NON-BREAKING (U+00A0). Combined with
+ * `whitespace-nowrap` at the render site this makes it structurally impossible for
+ * a time to break across lines, which is what previously produced the broken
+ * looking "03:00 / PM - / 04:00 / PM".
+ */
 export function formatSlotRange(startAt: string, endAt: string): string {
-  return `${formatTime(startAt)} – ${formatTime(endAt)}`;
+  return `${formatTime(startAt)}\u00a0–\u00a0${formatTime(endAt)}`;
+}
+
+/** Weekday + date, e.g. "Tue, 18 Aug". Used for availability group headers. */
+export function formatDayHeading(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+  });
 }
 
 /** "Today", "Tomorrow", or a short date. Used for grouping headers. */
