@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { APP_NAME } from '../../lib/config';
 import { cn } from '../../lib/utils';
@@ -43,27 +44,69 @@ export function Header() {
   const location = useLocation();
   const navigate = useNavigate();
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  // Focus is returned here when the sheet closes, rather than being dropped to the
+  // top of the document.
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   // Route changes must close the sheet, or it stays open over the new page.
   useEffect(() => {
     setMenuOpen(false);
   }, [location.pathname]);
 
-  // Escape closes the mobile sheet, and the body must not scroll behind it.
+  /**
+   * Dialog behaviour for the mobile sheet: Escape to close, no background scroll,
+   * focus moved in on open, focus trapped while open, focus restored on close.
+   *
+   * The trap matters because this panel declares `aria-modal="true"`. Without it,
+   * Tab walks straight out of the "modal" and into the page behind, which is both a
+   * broken experience and a false promise to assistive technology.
+   */
   useEffect(() => {
     if (!menuOpen) return;
 
+    const previouslyFocused = (document.activeElement as HTMLElement | null) ?? null;
+
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') setMenuOpen(false);
+      if (event.key === 'Escape') {
+        setMenuOpen(false);
+        return;
+      }
+      if (event.key !== 'Tab') return;
+
+      const panel = panelRef.current;
+      if (!panel) return;
+
+      const focusable = [
+        ...panel.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ].filter((element) => element.offsetParent !== null);
+
+      if (focusable.length === 0) return;
+
+      const first = focusable[0]!;
+      const last = focusable[focusable.length - 1]!;
+
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     }
+
     document.addEventListener('keydown', onKeyDown);
-    const previous = document.body.style.overflow;
+    const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     closeButtonRef.current?.focus();
 
     return () => {
       document.removeEventListener('keydown', onKeyDown);
-      document.body.style.overflow = previous;
+      document.body.style.overflow = previousOverflow;
+      // Prefer the hamburger, falling back to whatever had focus before.
+      (triggerRef.current ?? previouslyFocused)?.focus?.();
     };
   }, [menuOpen]);
 
@@ -151,6 +194,7 @@ export function Header() {
             <SearchIcon />
           </Link>
           <button
+            ref={triggerRef}
             type="button"
             onClick={() => setMenuOpen(true)}
             aria-expanded={menuOpen}
@@ -163,21 +207,37 @@ export function Header() {
         </div>
       </div>
 
-      {/* Mobile sheet */}
-      {menuOpen ? (
-        <div className="fixed inset-0 z-50 lg:hidden">
-          <div
-            className="absolute inset-0 bg-ink-900/50"
-            onClick={() => setMenuOpen(false)}
-            aria-hidden="true"
-          />
-          <div
-            id="mobile-menu"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Menu"
-            className="absolute inset-y-0 right-0 flex w-full max-w-xs flex-col bg-white shadow-pop"
-          >
+      {/*
+        Mobile sheet, PORTALLED TO document.body.
+
+        This is not optional tidiness. The <header> above carries `backdrop-blur`,
+        and per CSS spec an element with a backdrop-filter (like transform, filter or
+        perspective) becomes the CONTAINING BLOCK for its position:fixed
+        descendants. Rendered inside the header, this panel's `fixed inset-0`
+        therefore resolved against the header's 64px-tall box instead of the
+        viewport: the drawer was clipped to just its own title row, the navigation
+        links were cut off entirely, and the backdrop only dimmed the header strip.
+
+        Portalling to body escapes that containing block, and also puts the panel in
+        the root stacking context so z-index behaves predictably. `Modal.tsx` already
+        does this, which is why dialogs were unaffected.
+      */}
+      {menuOpen
+        ? createPortal(
+            <div className="fixed inset-0 z-50 lg:hidden">
+              <div
+                className="absolute inset-0 bg-ink-900/50"
+                onClick={() => setMenuOpen(false)}
+                aria-hidden="true"
+              />
+              <div
+                ref={panelRef}
+                id="mobile-menu"
+                role="dialog"
+                aria-modal="true"
+                aria-label="Menu"
+                className="absolute inset-y-0 right-0 flex w-full max-w-xs flex-col bg-white shadow-pop"
+              >
             <div className="flex h-16 items-center justify-between border-b border-ink-200 px-4">
               <span className="font-semibold text-ink-900">Menu</span>
               <IconButton
@@ -266,10 +326,12 @@ export function Header() {
                   </ButtonLink>
                 </div>
               )}
-            </nav>
-          </div>
-        </div>
-      ) : null}
+                </nav>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
     </header>
   );
 }

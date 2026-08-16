@@ -16,7 +16,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
+import { MemoryRouter } from 'react-router-dom';
+
 import { AvailabilityPicker } from './components/tutors/AvailabilityPicker';
+import { Header } from './components/layout/Header';
+import { AuthProvider } from './context/AuthContext';
+import { ToastProvider } from './context/ToastContext';
 import { formatSlotRange, formatTime } from './lib/utils';
 import type { AvailabilitySlot } from '../shared/domain/types';
 
@@ -304,5 +309,91 @@ describe('AvailabilityPicker rendering', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mobile navigation
+// ---------------------------------------------------------------------------
+
+describe('Header mobile sheet', () => {
+  /**
+   * Regression guard for a real defect.
+   *
+   * The <header> carries `backdrop-blur`. Per CSS spec, an element with a
+   * backdrop-filter becomes the containing block for its position:fixed
+   * descendants. While the sheet was rendered inside the header, its
+   * `fixed inset-0` resolved against the header's 64px box instead of the viewport,
+   * so the drawer was clipped to its own title bar and the navigation links were
+   * invisible.
+   *
+   * Asserting the panel is NOT inside <header> is what stops that returning: it is
+   * the structural property the fix depends on, and it cannot be checked by a build.
+   */
+  it('portals the open drawer outside the blurred header', async () => {
+    const user = userEvent.setup();
+
+    render(
+      <MemoryRouter>
+        <ToastProvider>
+          <AuthProvider>
+            <Header />
+          </AuthProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+
+    await user.click(screen.getByRole('button', { name: /open menu/i }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Menu' });
+    const header = document.querySelector('header');
+
+    expect(header).not.toBeNull();
+    // The whole point: the panel must live outside the containing block.
+    expect(header!.contains(dialog)).toBe(false);
+    expect(document.body.contains(dialog)).toBe(true);
+  });
+
+  it('shows the public navigation links once open', async () => {
+    const user = userEvent.setup();
+
+    render(
+      <MemoryRouter>
+        <ToastProvider>
+          <AuthProvider>
+            <Header />
+          </AuthProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+
+    await user.click(screen.getByRole('button', { name: /open menu/i }));
+    const dialog = await screen.findByRole('dialog', { name: 'Menu' });
+
+    // These were the links the user could not see.
+    expect(within(dialog).getByText('Find a tutor')).toBeTruthy();
+    expect(within(dialog).getByText('Subjects')).toBeTruthy();
+    expect(within(dialog).getByText('How it works')).toBeTruthy();
+  });
+
+  it('closes on Escape', async () => {
+    const user = userEvent.setup();
+
+    render(
+      <MemoryRouter>
+        <ToastProvider>
+          <AuthProvider>
+            <Header />
+          </AuthProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+
+    await user.click(screen.getByRole('button', { name: /open menu/i }));
+    await screen.findByRole('dialog', { name: 'Menu' });
+
+    await user.keyboard('{Escape}');
+
+    expect(screen.queryByRole('dialog', { name: 'Menu' })).toBeNull();
   });
 });

@@ -18,10 +18,16 @@ export function DemoBanner() {
         <span className="mt-0.5 shrink-0 text-base" aria-hidden="true">
           <InfoIcon />
         </span>
+        {/*
+          Kept deliberately short. The banner is permanent and non-dismissible by
+          design, so every line it occupies is stolen from the top of every page on a
+          small screen. This states the same three things (demo, local to this
+          device, connect AWS for real persistence) in roughly half the height.
+        */}
         <p className="text-sm">
-          <span className="font-semibold">Demo data.</span> This build is running on
-          browser-local storage, so accounts and bookings stay on this device and are not
-          shared with anyone else. Connect the AWS backend for real, multi-user persistence.
+          <span className="font-semibold">Demo data.</span> Accounts and bookings are
+          stored only in this browser. Connect the AWS backend for real, multi-user
+          persistence.
         </p>
       </div>
     </div>
