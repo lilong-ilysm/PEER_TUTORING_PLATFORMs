@@ -19,6 +19,10 @@ import type {
 } from '../../../../shared/domain/types';
 
 export interface LocalAccount extends UserProfile {
+  /**
+   * Demo-only, and hashed with a per-account salt even so. Real deployments use
+   * Cognito and never see a password. Never surfaced to the admin interface.
+   */
   passwordHash: string;
   salt: string;
   /** Marks records created by the seeder, so they can be refreshed safely. */

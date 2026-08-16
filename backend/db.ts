@@ -14,8 +14,10 @@ import {
   GetCommand,
   PutCommand,
   QueryCommand,
+  ScanCommand,
   UpdateCommand,
   type QueryCommandInput,
+  type ScanCommandInput,
 } from '@aws-sdk/lib-dynamodb';
 
 const client = new DynamoDBClient({});
@@ -81,6 +83,31 @@ export async function queryAll<T>(input: QueryCommandInput): Promise<T[]> {
     startKey = result.LastEvaluatedKey;
     guard += 1;
   } while (startKey && guard < 25);
+
+  return items;
+}
+
+/**
+ * Reads an entire table.
+ *
+ * Used only by the admin views, which legitimately need "every user" and "every
+ * session" — a question no index answers. A Scan is the honest operation for that.
+ * It is acceptable here because adding a dedicated index would require changing the
+ * CloudFormation stack, and the admin surface is low-traffic and small-N. If this
+ * platform ever grew past a few thousand records, these views would need pagination
+ * against a purpose-built index instead.
+ */
+export async function scanAll<T>(input: ScanCommandInput): Promise<T[]> {
+  const items: T[] = [];
+  let startKey: Record<string, unknown> | undefined;
+  let guard = 0;
+
+  do {
+    const result = await ddb.send(new ScanCommand({ ...input, ExclusiveStartKey: startKey }));
+    items.push(...((result.Items ?? []) as T[]));
+    startKey = result.LastEvaluatedKey;
+    guard += 1;
+  } while (startKey && guard < 40);
 
   return items;
 }

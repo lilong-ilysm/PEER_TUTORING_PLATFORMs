@@ -31,10 +31,18 @@ interface AuthContextValue {
   isAuthenticated: boolean;
   isTutor: boolean;
   isStudent: boolean;
+  /**
+   * Drives what the interface renders, and nothing more. Access is granted or
+   * refused by the server, which reads the caller's role from the database using the
+   * identity in their verified token. Editing this value in a browser console
+   * changes what is drawn and gains no data.
+   */
+  isAdmin: boolean;
   /** A tutor is only discoverable once the profile is complete and published. */
   hasPublishedTutorProfile: boolean;
 
-  signIn: (email: string, password: string) => Promise<void>;
+  /** Returns the signed-in user so callers can route by role. */
+  signIn: (email: string, password: string) => Promise<AuthUser>;
   signUp: (input: SignUpInput) => Promise<SignUpResult>;
   confirmSignUp: (email: string, code: string, password?: string) => Promise<void>;
   resendConfirmationCode: (email: string) => Promise<void>;
@@ -104,6 +112,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(next);
       await loadProfiles();
       await loadNotifications();
+      return next;
     },
     [loadProfiles, loadNotifications],
   );
@@ -174,6 +183,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isAuthenticated: Boolean(user),
       isTutor: roles.includes('TUTOR'),
       isStudent: roles.includes('STUDENT'),
+      isAdmin: roles.includes('ADMIN'),
       hasPublishedTutorProfile: Boolean(
         tutorProfile?.isPublished && tutorProfile.subjectIds.length > 0,
       ),

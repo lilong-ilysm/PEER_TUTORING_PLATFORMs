@@ -9,18 +9,24 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  assertCanAssignRoles,
   assertCanBook,
   assertCanReview,
+  assertCanSetAccountStatus,
+  assertIsAdmin,
   assertNoOverlap,
+  assertNotSuspended,
   assertSlotDeletable,
   assertTransition,
   canTransition,
   computeRatingAggregate,
+  isAdmin,
   isBookable,
   isDiscoverable,
   isTerminalStatus,
   occupiesSlot,
   passwordProblems,
+  sanitiseSelfAssignedRoles,
   slotsOverlap,
   validateEmail,
   validateHourlyRate,
@@ -37,6 +43,7 @@ import type {
   Session,
   TutorListing,
   TutorProfile,
+  UserRole,
 } from '../shared/domain/types';
 
 const NOW = new Date('2026-03-01T12:00:00.000Z');
@@ -649,5 +656,188 @@ describe('pagination (AC-12)', () => {
     const result = paginate([], 1, 10);
     expect(result.totalPages).toBe(1);
     expect(result.items).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Administration
+//
+// These are the security tests. The first one is the most important test in the
+// suite: it is the guard against any authenticated user promoting themselves to
+// administrator through the self-service profile endpoint.
+// ---------------------------------------------------------------------------
+
+describe('admin authorisation (privilege escalation)', () => {
+  it('refuses to let a user assign themselves ADMIN', () => {
+    // The self-service endpoint takes a roles array straight from the request body.
+    // ADMIN must be silently stripped, never honoured.
+    expect(sanitiseSelfAssignedRoles(['STUDENT', 'ADMIN'])).toEqual(['STUDENT']);
+    expect(sanitiseSelfAssignedRoles(['ADMIN', 'TUTOR'])).toEqual(['TUTOR']);
+    expect(sanitiseSelfAssignedRoles(['STUDENT', 'TUTOR'])).toEqual(['STUDENT', 'TUTOR']);
+  });
+
+  it('rejects a role list that is only ADMIN, rather than silently emptying it', () => {
+    expectDomainError(
+      () => sanitiseSelfAssignedRoles(['ADMIN']),
+      DomainErrorCode.VALIDATION,
+    );
+  });
+
+  it('rejects junk and non-array input', () => {
+    expectDomainError(() => sanitiseSelfAssignedRoles([]), DomainErrorCode.VALIDATION);
+    expectDomainError(() => sanitiseSelfAssignedRoles('ADMIN'), DomainErrorCode.VALIDATION);
+    expectDomainError(() => sanitiseSelfAssignedRoles(null), DomainErrorCode.VALIDATION);
+    expectDomainError(
+      () => sanitiseSelfAssignedRoles(['SUPERUSER']),
+      DomainErrorCode.VALIDATION,
+    );
+  });
+
+  it('deduplicates', () => {
+    expect(sanitiseSelfAssignedRoles(['STUDENT', 'STUDENT'])).toEqual(['STUDENT']);
+  });
+});
+
+describe('admin gate', () => {
+  // `as UserRole[]`, not `as const`: the latter produces a readonly tuple, which is
+  // not assignable to the mutable UserRole[] that Principal declares.
+  const admin = { userId: 'admin-1', roles: ['ADMIN'] as UserRole[] };
+  const learner = { userId: 'user-1', roles: ['STUDENT'] as UserRole[] };
+
+  it('identifies admins', () => {
+    expect(isAdmin(admin)).toBe(true);
+    expect(isAdmin(learner)).toBe(false);
+    expect(isAdmin({ roles: ['STUDENT', 'ADMIN'] })).toBe(true);
+  });
+
+  it('reports NOT_FOUND rather than FORBIDDEN to a non-admin', () => {
+    // Answering "forbidden" would confirm that an admin surface exists there.
+    expectDomainError(() => assertIsAdmin(learner), DomainErrorCode.NOT_FOUND);
+    expect(() => assertIsAdmin(admin)).not.toThrow();
+  });
+});
+
+describe('account suspension', () => {
+  it('blocks a suspended account', () => {
+    expectDomainError(
+      () => assertNotSuspended({ status: 'SUSPENDED' }),
+      DomainErrorCode.FORBIDDEN,
+    );
+  });
+
+  it('allows active accounts, and records with no status set', () => {
+    expect(() => assertNotSuspended({ status: 'ACTIVE' })).not.toThrow();
+    // Records created before the field existed must not be locked out.
+    expect(() => assertNotSuspended({})).not.toThrow();
+  });
+});
+
+describe('admin role assignment', () => {
+  const admin = { userId: 'admin-1', roles: ['ADMIN'] as UserRole[] };
+  const other = { userId: 'admin-2', roles: ['ADMIN'] as UserRole[] };
+
+  it('lets an admin grant roles including ADMIN', () => {
+    expect(
+      assertCanAssignRoles({
+        actor: admin,
+        targetUserId: 'user-9',
+        nextRoles: ['STUDENT', 'ADMIN'],
+      }),
+    ).toEqual(['STUDENT', 'ADMIN']);
+  });
+
+  it('refuses a non-admin actor', () => {
+    expectDomainError(
+      () =>
+        assertCanAssignRoles({
+          actor: { userId: 'user-1', roles: ['STUDENT', 'TUTOR'] },
+          targetUserId: 'user-9',
+          nextRoles: ['ADMIN'],
+        }),
+      DomainErrorCode.NOT_FOUND,
+    );
+  });
+
+  it('stops an admin removing their own admin role', () => {
+    // Otherwise the last administrator can lock everyone out of the panel.
+    expectDomainError(
+      () =>
+        assertCanAssignRoles({
+          actor: admin,
+          targetUserId: admin.userId,
+          nextRoles: ['STUDENT'],
+        }),
+      DomainErrorCode.VALIDATION,
+    );
+  });
+
+  it('allows an admin to demote a DIFFERENT admin', () => {
+    expect(
+      assertCanAssignRoles({
+        actor: admin,
+        targetUserId: other.userId,
+        nextRoles: ['STUDENT'],
+      }),
+    ).toEqual(['STUDENT']);
+  });
+
+  it('rejects an empty role list', () => {
+    expectDomainError(
+      () =>
+        assertCanAssignRoles({ actor: admin, targetUserId: 'user-9', nextRoles: [] }),
+      DomainErrorCode.VALIDATION,
+    );
+  });
+});
+
+describe('admin account status changes', () => {
+  const admin = { userId: 'admin-1', roles: ['ADMIN'] as UserRole[] };
+  const learner = { userId: 'user-1', roles: ['STUDENT'] as UserRole[] };
+
+  it('lets an admin suspend a normal user', () => {
+    expect(() =>
+      assertCanSetAccountStatus({ actor: admin, target: learner, nextStatus: 'SUSPENDED' }),
+    ).not.toThrow();
+  });
+
+  it('refuses a non-admin actor', () => {
+    expectDomainError(
+      () =>
+        assertCanSetAccountStatus({
+          actor: learner,
+          target: { userId: 'user-2', roles: ['STUDENT'] },
+          nextStatus: 'SUSPENDED',
+        }),
+      DomainErrorCode.NOT_FOUND,
+    );
+  });
+
+  it('stops an admin suspending themselves', () => {
+    expectDomainError(
+      () => assertCanSetAccountStatus({ actor: admin, target: admin, nextStatus: 'SUSPENDED' }),
+      DomainErrorCode.VALIDATION,
+    );
+  });
+
+  it('stops one admin suspending another', () => {
+    expectDomainError(
+      () =>
+        assertCanSetAccountStatus({
+          actor: admin,
+          target: { userId: 'admin-2', roles: ['ADMIN'] },
+          nextStatus: 'SUSPENDED',
+        }),
+      DomainErrorCode.FORBIDDEN,
+    );
+  });
+
+  it('allows reactivating an admin', () => {
+    expect(() =>
+      assertCanSetAccountStatus({
+        actor: admin,
+        target: { userId: 'admin-2', roles: ['ADMIN'], status: 'SUSPENDED' },
+        nextStatus: 'ACTIVE',
+      }),
+    ).not.toThrow();
   });
 });

@@ -9,11 +9,14 @@
  */
 
 import { DomainError, DomainErrorCode } from './errors';
+import { SELF_ASSIGNABLE_ROLES } from './types';
 import type {
+  AccountStatus,
   AvailabilitySlot,
   Review,
   Session,
   SessionStatus,
+  UserRole,
 } from './types';
 
 // ---------------------------------------------------------------------------
@@ -484,4 +487,148 @@ export function isDiscoverable(params: {
   bio: string;
 }): boolean {
   return params.isPublished && params.subjectCount > 0 && params.bio.trim().length > 0;
+}
+
+// ---------------------------------------------------------------------------
+// Administration
+//
+// These are the security-critical rules of the admin feature. They live here, in
+// the shared module, so the AWS Lambda and the browser-local backend enforce
+// exactly the same thing. The frontend also calls them, but only to decide what to
+// render: the enforcement that matters happens server-side, where the caller's
+// identity comes from a verified Cognito token rather than from the request body.
+// ---------------------------------------------------------------------------
+
+/** An account principal as far as authorisation is concerned. */
+export interface Principal {
+  userId: string;
+  roles: UserRole[];
+  status?: AccountStatus;
+}
+
+export function isAdmin(principal: Pick<Principal, 'roles'>): boolean {
+  return principal.roles.includes('ADMIN');
+}
+
+export function isSuspended(principal: Pick<Principal, 'status'>): boolean {
+  return principal.status === 'SUSPENDED';
+}
+
+/**
+ * Gate for every administrative operation.
+ *
+ * Deliberately reports NOT_FOUND rather than FORBIDDEN. Answering "forbidden"
+ * confirms to a non-admin that an admin surface exists at that address; a plain
+ * "not found" tells a prober nothing.
+ */
+export function assertIsAdmin(principal: Pick<Principal, 'roles'>): void {
+  if (!isAdmin(principal)) {
+    throw new DomainError(DomainErrorCode.NOT_FOUND, 'Not found.');
+  }
+}
+
+/**
+ * Blocks a suspended account from doing anything authenticated.
+ *
+ * Checked on every authenticated request, not only at sign-in: a Cognito token
+ * stays valid for its full lifetime, so a user suspended mid-session would
+ * otherwise keep full access until their token expired.
+ */
+export function assertNotSuspended(principal: Pick<Principal, 'status'>): void {
+  if (isSuspended(principal)) {
+    throw new DomainError(
+      DomainErrorCode.FORBIDDEN,
+      'This account has been suspended. Contact an administrator.',
+    );
+  }
+}
+
+/**
+ * Filters a self-service role change down to the roles a user may grant
+ * themselves, which never includes ADMIN.
+ *
+ * This is the guard on the privilege-escalation path: `PUT /me/profile` takes a
+ * roles array straight from the request body.
+ */
+export function sanitiseSelfAssignedRoles(input: unknown): UserRole[] {
+  const requested = Array.isArray(input) ? (input as UserRole[]) : [];
+  const allowed = requested.filter((role) => SELF_ASSIGNABLE_ROLES.includes(role));
+  const unique = [...new Set(allowed)];
+
+  if (unique.length === 0) {
+    throw new DomainError(
+      DomainErrorCode.VALIDATION,
+      'You need at least one role on your account.',
+      'roles',
+    );
+  }
+  return unique;
+}
+
+/** Validates a role set an administrator is assigning to somebody. */
+export function assertCanAssignRoles(params: {
+  actor: Principal;
+  targetUserId: string;
+  nextRoles: UserRole[];
+}): UserRole[] {
+  const { actor, targetUserId, nextRoles } = params;
+  assertIsAdmin(actor);
+
+  const unique = [...new Set(nextRoles)].filter(
+    (role) => role === 'STUDENT' || role === 'TUTOR' || role === 'ADMIN',
+  );
+
+  if (unique.length === 0) {
+    throw new DomainError(
+      DomainErrorCode.VALIDATION,
+      'An account needs at least one role.',
+      'roles',
+    );
+  }
+
+  // Removing your own admin rights could leave the platform with no administrator
+  // and no way to appoint one from the interface.
+  if (actor.userId === targetUserId && !unique.includes('ADMIN')) {
+    throw new DomainError(
+      DomainErrorCode.VALIDATION,
+      'You cannot remove your own administrator role. Ask another administrator to do it.',
+    );
+  }
+
+  return unique;
+}
+
+/** Validates a suspend/reactivate action. */
+export function assertCanSetAccountStatus(params: {
+  actor: Principal;
+  target: Principal;
+  nextStatus: AccountStatus;
+}): void {
+  const { actor, target, nextStatus } = params;
+  assertIsAdmin(actor);
+
+  if (actor.userId === target.userId) {
+    throw new DomainError(
+      DomainErrorCode.VALIDATION,
+      'You cannot suspend your own account.',
+    );
+  }
+
+  // Protects against admins disabling each other, accidentally or otherwise.
+  if (nextStatus === 'SUSPENDED' && isAdmin(target)) {
+    throw new DomainError(
+      DomainErrorCode.FORBIDDEN,
+      'Administrators cannot be suspended. Remove the administrator role first.',
+    );
+  }
+}
+
+/**
+ * An administrator may delete a review as moderation, but may never alter its
+ * rating: editing scores would quietly corrupt the tutor ratings the whole
+ * discovery experience depends on. Deletion is visible in the aggregate; a silent
+ * edit is not.
+ */
+export function assertCanModerateReview(actor: Principal): void {
+  assertIsAdmin(actor);
 }

@@ -28,11 +28,21 @@ import {
   validateTopic,
   LIMITS,
 } from '../../../../shared/domain/rules';
-import { isValidSubjectId } from '../../../../shared/domain/subjects';
+import {
+  assertCanAssignRoles,
+  assertCanModerateReview,
+  assertCanSetAccountStatus,
+  assertIsAdmin,
+  assertNotSuspended,
+} from '../../../../shared/domain/rules';
+import { getSubjectName, isValidSubjectId } from '../../../../shared/domain/subjects';
 // Single shared implementation, so the demo, Amplify and REST backends cannot
 // disagree about what a tutor listing looks like.
 import { buildListing } from '../../../../shared/domain/listing';
 import type {
+  AccountStatus,
+  AdminUserDetail,
+  AdminUserSummary,
   AppNotification,
   AvailabilitySlot,
   Message,
@@ -41,6 +51,7 @@ import type {
   SessionView,
   TutorProfile,
   UserProfile,
+  UserRole,
 } from '../../../../shared/domain/types';
 import type {
   AuthUser,
@@ -124,7 +135,68 @@ function requireAccount(db: LocalDb): LocalAccount {
   if (!account) {
     throw new DomainError(DomainErrorCode.UNAUTHENTICATED, 'You need to sign in first.');
   }
+  // Mirrors the Lambda: suspension is checked on every authenticated operation, not
+  // just at sign-in.
+  assertNotSuspended(account);
   return account;
+}
+
+/** The signed-in account, asserted to be an active administrator. */
+function requireAdminAccount(db: LocalDb): LocalAccount {
+  const account = requireAccount(db);
+  assertIsAdmin(account);
+  return account;
+}
+
+function summariseAccount(db: LocalDb, account: LocalAccount): AdminUserSummary {
+  const profile = db.tutorProfiles.find((item) => item.userId === account.id);
+  const sessionCount = db.sessions.filter(
+    (session) =>
+      session.studentUserId === account.id || session.tutorUserId === account.id,
+  ).length;
+
+  return {
+    id: account.id,
+    userId: account.userId,
+    displayName: account.displayName,
+    email: account.email,
+    roles: account.roles,
+    status: account.status === 'SUSPENDED' ? 'SUSPENDED' : 'ACTIVE',
+    institution: account.institution ?? null,
+    createdAt: account.createdAt,
+    tutorProfileId: profile?.id ?? null,
+    isPublishedTutor: profile
+      ? isDiscoverable({
+          isPublished: profile.isPublished,
+          subjectCount: profile.subjectIds.length,
+          bio: profile.bio,
+        })
+      : false,
+    ratingAvg: profile?.ratingAvg ?? null,
+    ratingCount: profile?.ratingCount ?? 0,
+    sessionCount,
+  };
+}
+
+function detailForAccount(db: LocalDb, userId: string): AdminUserDetail {
+  const account = db.accounts.find((candidate) => candidate.id === userId);
+  if (!account) {
+    throw new DomainError(DomainErrorCode.NOT_FOUND, 'That user does not exist.');
+  }
+
+  const profile = db.tutorProfiles.find((item) => item.userId === userId) ?? null;
+
+  return {
+    ...summariseAccount(db, account),
+    bio: account.bio ?? null,
+    tutorProfile: profile,
+    sessionsAsStudent: db.sessions.filter((item) => item.studentUserId === userId).length,
+    sessionsAsTutor: db.sessions.filter((item) => item.tutorUserId === userId).length,
+    reviewsWritten: db.reviews.filter((item) => item.studentUserId === userId).length,
+    reviewsReceived: profile
+      ? db.reviews.filter((item) => item.tutorProfileId === profile.id).length
+      : 0,
+  };
 }
 
 function toSessionView(session: LocalSession): SessionView {
@@ -247,6 +319,10 @@ export const localBackend: Backend = {
 
     const attempted = await hashPassword(password, account.salt);
     if (attempted !== account.passwordHash) throw genericFailure;
+
+    // Credentials are correct but the account may be suspended. Reported after the
+    // password check so this cannot be used to probe which accounts are suspended.
+    assertNotSuspended(account);
 
     return mutate((current) => {
       current.currentUserId = account.id;
@@ -938,5 +1014,205 @@ export const localBackend: Backend = {
         if (notification.userId === account.id) notification.read = true;
       }
     });
+  },
+
+  // -------------------------------------------------------------------------
+  // Administration
+  //
+  // Enforces the same shared rules as the Lambda. Demo mode must not be more
+  // permissive than production, otherwise testing the admin area here would prove
+  // nothing about the deployed behaviour.
+  // -------------------------------------------------------------------------
+
+  async adminGetOverview() {
+    await ensureReady();
+    const db = readDb();
+    requireAdminAccount(db);
+
+    const now = Date.now();
+    const byStatus = (status: string) =>
+      db.sessions.filter((session) => session.status === status).length;
+    const { ratingAvg } = computeRatingAggregate(db.reviews.map((review) => review.rating));
+
+    return {
+      totalUsers: db.accounts.length,
+      students: db.accounts.filter((account) => account.roles.includes('STUDENT')).length,
+      tutors: db.accounts.filter((account) => account.roles.includes('TUTOR')).length,
+      admins: db.accounts.filter((account) => account.roles.includes('ADMIN')).length,
+      suspended: db.accounts.filter((account) => account.status === 'SUSPENDED').length,
+      publishedTutors: db.tutorProfiles.filter((profile) =>
+        isDiscoverable({
+          isPublished: profile.isPublished,
+          subjectCount: profile.subjectIds.length,
+          bio: profile.bio,
+        }),
+      ).length,
+      unpublishedTutors: db.tutorProfiles.filter((profile) => !profile.isPublished).length,
+      totalSessions: db.sessions.length,
+      pendingSessions: byStatus('PENDING'),
+      confirmedSessions: byStatus('CONFIRMED'),
+      completedSessions: byStatus('COMPLETED'),
+      cancelledSessions: byStatus('CANCELLED'),
+      declinedSessions: byStatus('DECLINED'),
+      upcomingSessions: db.sessions.filter(
+        (session) => session.status === 'CONFIRMED' && Date.parse(session.startAt) >= now,
+      ).length,
+      totalReviews: db.reviews.length,
+      averageRating: ratingAvg,
+      openSlots: db.slots.filter(
+        (slot) => slot.status === 'OPEN' && Date.parse(slot.startAt) > now,
+      ).length,
+    };
+  },
+
+  async adminListUsers() {
+    await ensureReady();
+    const db = readDb();
+    requireAdminAccount(db);
+    return db.accounts
+      .map((account) => summariseAccount(db, account))
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  },
+
+  async adminGetUser(userId: string) {
+    await ensureReady();
+    const db = readDb();
+    requireAdminAccount(db);
+    return detailForAccount(db, userId);
+  },
+
+  async adminSetUserStatus(userId: string, status: AccountStatus) {
+    await ensureReady();
+    return delay(
+      mutate((db) => {
+        const actor = requireAdminAccount(db);
+        const target = db.accounts.find((account) => account.id === userId);
+        if (!target) {
+          throw new DomainError(DomainErrorCode.NOT_FOUND, 'That user does not exist.');
+        }
+
+        assertCanSetAccountStatus({
+          actor: { userId: actor.id, roles: actor.roles, status: actor.status },
+          target: { userId: target.id, roles: target.roles, status: target.status },
+          nextStatus: status,
+        });
+
+        target.status = status;
+
+        // Suspending a tutor also removes them from search.
+        if (status === 'SUSPENDED') {
+          const profile = db.tutorProfiles.find((item) => item.userId === userId);
+          if (profile) profile.isPublished = false;
+        }
+
+        return detailForAccount(db, userId);
+      }),
+    );
+  },
+
+  async adminSetUserRoles(userId: string, roles: UserRole[]) {
+    await ensureReady();
+    return delay(
+      mutate((db) => {
+        const actor = requireAdminAccount(db);
+        const target = db.accounts.find((account) => account.id === userId);
+        if (!target) {
+          throw new DomainError(DomainErrorCode.NOT_FOUND, 'That user does not exist.');
+        }
+
+        target.roles = assertCanAssignRoles({
+          actor: { userId: actor.id, roles: actor.roles, status: actor.status },
+          targetUserId: userId,
+          nextRoles: roles,
+        });
+
+        if (!target.roles.includes('TUTOR')) {
+          const profile = db.tutorProfiles.find((item) => item.userId === userId);
+          if (profile) profile.isPublished = false;
+        }
+
+        return detailForAccount(db, userId);
+      }),
+    );
+  },
+
+  async adminListSessions() {
+    await ensureReady();
+    const db = readDb();
+    requireAdminAccount(db);
+    return db.sessions
+      .map((session) => ({ ...session, subjectName: getSubjectName(session.subjectId) }))
+      .sort((a, b) => Date.parse(b.startAt) - Date.parse(a.startAt));
+  },
+
+  async adminListReviews() {
+    await ensureReady();
+    const db = readDb();
+    requireAdminAccount(db);
+
+    return db.reviews
+      .map((review) => {
+        const profile = db.tutorProfiles.find(
+          (item) => item.id === review.tutorProfileId,
+        );
+        const session = db.sessions.find((item) => item.id === review.sessionId);
+        return {
+          ...review,
+          tutorName: profile?.displayName ?? 'Unknown tutor',
+          subjectName: session ? getSubjectName(session.subjectId) : 'Unknown subject',
+        };
+      })
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  },
+
+  async adminDeleteReview(reviewId: string) {
+    await ensureReady();
+    mutate((db) => {
+      const actor = requireAdminAccount(db);
+      assertCanModerateReview({
+        userId: actor.id,
+        roles: actor.roles,
+        status: actor.status,
+      });
+
+      const review = db.reviews.find((item) => item.id === reviewId);
+      if (!review) {
+        throw new DomainError(DomainErrorCode.NOT_FOUND, 'That review no longer exists.');
+      }
+
+      db.reviews = db.reviews.filter((item) => item.id !== reviewId);
+
+      // The visible rating must always equal the mean of the visible reviews.
+      const profile = db.tutorProfiles.find((item) => item.id === review.tutorProfileId);
+      if (profile) {
+        const aggregate = computeRatingAggregate(
+          db.reviews
+            .filter((item) => item.tutorProfileId === profile.id)
+            .map((item) => item.rating),
+        );
+        profile.ratingAvg = aggregate.ratingAvg;
+        profile.ratingCount = aggregate.ratingCount;
+      }
+
+      const session = db.sessions.find((item) => item.id === review.sessionId);
+      if (session) session.hasReview = false;
+    });
+    await delay(null);
+  },
+
+  async adminUnpublishTutor(tutorProfileId: string) {
+    await ensureReady();
+    mutate((db) => {
+      requireAdminAccount(db);
+      const profile = db.tutorProfiles.find((item) => item.id === tutorProfileId);
+      if (!profile) {
+        throw new DomainError(
+          DomainErrorCode.NOT_FOUND,
+          'That tutor profile does not exist.',
+        );
+      }
+      profile.isPublished = false;
+    });
+    await delay(null);
   },
 };

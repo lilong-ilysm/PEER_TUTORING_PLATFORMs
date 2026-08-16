@@ -28,8 +28,16 @@ export function LoginPage() {
     setError(null);
 
     try {
-      await signIn(email, password);
-      navigate(redirectTo, { replace: true });
+      const signedIn = await signIn(email, password);
+
+      // Route by role. An administrator lands in the admin panel unless they were
+      // deep-linked somewhere specific, in which case that intent is honoured.
+      const wasDeepLinked = Boolean((location.state as { from?: string } | null)?.from);
+      const target = signedIn.roles.includes('ADMIN') && !wasDeepLinked
+        ? '/admin'
+        : redirectTo;
+
+      navigate(target, { replace: true });
     } catch (caught) {
       setError(toUserMessage(caught));
     } finally {

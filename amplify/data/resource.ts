@@ -21,7 +21,15 @@ const schema = a
     // -------------------------------------------------------------------------
     // Enums
     // -------------------------------------------------------------------------
-    UserRole: a.enum(['STUDENT', 'TUTOR']),
+    // ADMIN is part of the domain, so it belongs in the schema. Without it the
+    // generated client types reject the role and the shared `UserRole` union no
+    // longer matches what this API can store.
+    //
+    // This is a source-only change to a stack that is NOT deployed (Amplify Gen 2
+    // cannot be deployed in an AWS Academy Learner Lab). It creates no AWS resource
+    // and requires no AWS action. Granting ADMIN is still impossible through any
+    // client-writable path: see `sanitiseSelfAssignedRoles` in shared/domain/rules.
+    UserRole: a.enum(['STUDENT', 'TUTOR', 'ADMIN']),
     AcademicLevel: a.enum(['HIGH_SCHOOL', 'FOUNDATION', 'UNDERGRADUATE', 'POSTGRADUATE']),
     SessionMode: a.enum(['ONLINE', 'IN_PERSON', 'EITHER']),
     SlotStatus: a.enum(['OPEN', 'BOOKED']),

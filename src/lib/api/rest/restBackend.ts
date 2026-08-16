@@ -32,6 +32,12 @@ import {
   validatePassword,
 } from '../../../../shared/domain/rules';
 import type {
+  AccountStatus,
+  AdminOverview,
+  AdminReviewRow,
+  AdminSessionRow,
+  AdminUserDetail,
+  AdminUserSummary,
   AppNotification,
   AvailabilitySlot,
   Message,
@@ -508,5 +514,57 @@ export const restBackend: Backend = {
 
   async markAllNotificationsRead() {
     await apiSend('/me/notifications/read-all', 'POST');
+  },
+
+  // --- Administration -----------------------------------------------------
+  // These hit /api/*, so API Gateway rejects them outright without a valid Cognito
+  // token, and the Lambda then rejects them unless the caller's stored record
+  // carries the ADMIN role.
+
+  async adminGetOverview() {
+    return apiGet<AdminOverview>('/admin/overview');
+  },
+
+  async adminListUsers() {
+    return apiGet<AdminUserSummary[]>('/admin/users');
+  },
+
+  async adminGetUser(userId: string) {
+    return apiGet<AdminUserDetail>(`/admin/users/${encodeURIComponent(userId)}`);
+  },
+
+  async adminSetUserStatus(userId: string, status: AccountStatus) {
+    return apiSend<AdminUserDetail>(
+      `/admin/users/${encodeURIComponent(userId)}/status`,
+      'POST',
+      { status },
+    );
+  },
+
+  async adminSetUserRoles(userId: string, roles: UserRole[]) {
+    return apiSend<AdminUserDetail>(
+      `/admin/users/${encodeURIComponent(userId)}/roles`,
+      'POST',
+      { roles },
+    );
+  },
+
+  async adminListSessions() {
+    return apiGet<AdminSessionRow[]>('/admin/sessions');
+  },
+
+  async adminListReviews() {
+    return apiGet<AdminReviewRow[]>('/admin/reviews');
+  },
+
+  async adminDeleteReview(reviewId: string) {
+    await apiSend(`/admin/reviews/${encodeURIComponent(reviewId)}`, 'DELETE');
+  },
+
+  async adminUnpublishTutor(tutorProfileId: string) {
+    await apiSend(
+      `/admin/tutors/${encodeURIComponent(tutorProfileId)}/unpublish`,
+      'POST',
+    );
   },
 };

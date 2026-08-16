@@ -68,6 +68,40 @@ export function RequireTutor() {
   return <Outlet />;
 }
 
+/**
+ * Requires the ADMIN role.
+ *
+ * This guard controls RENDERING only. It is not the security boundary, and it is
+ * important not to mistake it for one: every admin API call is authorised again on
+ * the server, which reads the caller's role from the database using the user id in
+ * their Cognito-verified token. A user who edits their client bundle to slip past
+ * this guard reaches an admin interface whose every request is refused.
+ *
+ * Non-admins are sent to the 404 page rather than shown "forbidden", so the admin
+ * area does not confirm its own existence to someone probing for it. The server
+ * behaves the same way.
+ */
+export function RequireAdmin() {
+  const { initialising, isAuthenticated, isAdmin } = useAuth();
+  const location = useLocation();
+
+  if (initialising) return <FullPageLoading label="Checking your access" />;
+
+  if (!isAuthenticated) {
+    return (
+      <Navigate
+        to="/login"
+        replace
+        state={{ from: `${location.pathname}${location.search}` }}
+      />
+    );
+  }
+
+  if (!isAdmin) return <Navigate to="/not-found" replace />;
+
+  return <Outlet />;
+}
+
 /** Keeps a signed-in user off the login and register pages. */
 export function RedirectIfAuthenticated({ children }: { children: React.ReactNode }) {
   const { initialising, isAuthenticated } = useAuth();

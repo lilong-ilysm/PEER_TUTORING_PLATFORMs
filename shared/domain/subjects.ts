@@ -94,6 +94,7 @@ export const MODE_ORDER: SessionMode[] = ['ONLINE', 'IN_PERSON', 'EITHER'];
 export const ROLE_LABELS: Record<UserRole, string> = {
   STUDENT: 'Learner',
   TUTOR: 'Tutor',
+  ADMIN: 'Administrator',
 };
 
 export const WEEKDAY_LABELS = [

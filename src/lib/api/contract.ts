@@ -9,6 +9,12 @@
 
 import type {
   AcademicLevel,
+  AccountStatus,
+  AdminOverview,
+  AdminReviewRow,
+  AdminSessionRow,
+  AdminUserDetail,
+  AdminUserSummary,
   AppNotification,
   AvailabilitySlot,
   Message,
@@ -130,4 +136,17 @@ export interface Backend {
   listMyNotifications(): Promise<AppNotification[]>;
   markNotificationRead(notificationId: string): Promise<void>;
   markAllNotificationsRead(): Promise<void>;
+
+  // --- Administration -----------------------------------------------------
+  // Every one of these is authorised server-side by reading the caller's own role
+  // from the database. The client calling them is not what grants access.
+  adminGetOverview(): Promise<AdminOverview>;
+  adminListUsers(): Promise<AdminUserSummary[]>;
+  adminGetUser(userId: string): Promise<AdminUserDetail>;
+  adminSetUserStatus(userId: string, status: AccountStatus): Promise<AdminUserDetail>;
+  adminSetUserRoles(userId: string, roles: UserRole[]): Promise<AdminUserDetail>;
+  adminListSessions(): Promise<AdminSessionRow[]>;
+  adminListReviews(): Promise<AdminReviewRow[]>;
+  adminDeleteReview(reviewId: string): Promise<void>;
+  adminUnpublishTutor(tutorProfileId: string): Promise<void>;
 }

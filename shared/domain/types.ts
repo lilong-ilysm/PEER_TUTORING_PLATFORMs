@@ -5,7 +5,20 @@
  * handlers (`amplify/functions/`). Keep it dependency-free and side-effect free.
  */
 
-export type UserRole = 'STUDENT' | 'TUTOR';
+export type UserRole = 'STUDENT' | 'TUTOR' | 'ADMIN';
+
+/**
+ * Roles a user is allowed to give themselves.
+ *
+ * ADMIN is deliberately absent. `PUT /me/profile` accepts a roles array from the
+ * request body, so without this allow-list any authenticated user could promote
+ * themselves to administrator. Granting ADMIN is only possible through an
+ * admin-only endpoint, or by editing the record directly in DynamoDB to create the
+ * very first administrator.
+ */
+export const SELF_ASSIGNABLE_ROLES: readonly UserRole[] = ['STUDENT', 'TUTOR'];
+
+export type AccountStatus = 'ACTIVE' | 'SUSPENDED';
 
 export type AcademicLevel =
   | 'HIGH_SCHOOL'
@@ -50,10 +63,81 @@ export interface UserProfile {
   displayName: string;
   email: string;
   roles: UserRole[];
+  /**
+   * Suspension is enforced server-side on every authenticated request. It is stored
+   * here rather than in Cognito because disabling a Cognito user requires the
+   * `cognito-idp:AdminDisableUser` permission, which cannot be relied on in a
+   * restricted lab account. Records created before this field existed are treated
+   * as ACTIVE.
+   */
+  status?: AccountStatus;
   institution?: string | null;
   headline?: string | null;
   bio?: string | null;
   createdAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Administration
+//
+// Every figure below is counted from records that exist. There are no estimates
+// and no placeholder values.
+// ---------------------------------------------------------------------------
+
+export interface AdminOverview {
+  totalUsers: number;
+  students: number;
+  tutors: number;
+  admins: number;
+  suspended: number;
+  /** Tutor profiles that are published AND discoverable. */
+  publishedTutors: number;
+  unpublishedTutors: number;
+  totalSessions: number;
+  pendingSessions: number;
+  confirmedSessions: number;
+  completedSessions: number;
+  cancelledSessions: number;
+  declinedSessions: number;
+  upcomingSessions: number;
+  totalReviews: number;
+  /** Mean across every review on the platform. null when there are none. */
+  averageRating: number | null;
+  openSlots: number;
+}
+
+export interface AdminUserSummary {
+  id: string;
+  userId: string;
+  displayName: string;
+  email: string;
+  roles: UserRole[];
+  status: AccountStatus;
+  institution?: string | null;
+  createdAt: string;
+  tutorProfileId: string | null;
+  isPublishedTutor: boolean;
+  ratingAvg: number | null;
+  ratingCount: number;
+  sessionCount: number;
+}
+
+export interface AdminUserDetail extends AdminUserSummary {
+  bio?: string | null;
+  tutorProfile: TutorProfile | null;
+  sessionsAsStudent: number;
+  sessionsAsTutor: number;
+  reviewsWritten: number;
+  reviewsReceived: number;
+}
+
+export interface AdminSessionRow extends SessionView {
+  subjectName: string;
+}
+
+export interface AdminReviewRow extends Review {
+  tutorName: string;
+  subjectName: string;
 }
 
 export interface TutorProfile {

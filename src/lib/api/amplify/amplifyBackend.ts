@@ -1006,7 +1006,58 @@ export const amplifyBackend: Backend = {
       ),
     );
   },
+
+  // --- Administration -----------------------------------------------------
+  /*
+   * NOT IMPLEMENTED for the Amplify Gen 2 backend, and deliberately so.
+   *
+   * Doing it properly here would mean adding admin-only authorisation rules to the
+   * AppSync schema and new Lambda-backed mutations, i.e. changing the Gen 2 backend
+   * definition. That backend cannot be deployed in an AWS Academy Learner Lab at
+   * all (it requires iam:CreateRole), so the work could never be run or verified.
+   *
+   * Rather than ship admin code that silently returns nothing, these throw a clear,
+   * explicit error. The deployable REST backend implements the full admin surface.
+   */
+  ...adminNotSupported(),
 };
+
+/**
+ * Explicit failure beats a silent stub. If someone runs the app in `amplify` mode
+ * and opens the admin area, they get a message that says exactly what is wrong,
+ * instead of empty tables that look like a platform with no users.
+ */
+function adminNotSupported(): Pick<
+  Backend,
+  | 'adminGetOverview'
+  | 'adminListUsers'
+  | 'adminGetUser'
+  | 'adminSetUserStatus'
+  | 'adminSetUserRoles'
+  | 'adminListSessions'
+  | 'adminListReviews'
+  | 'adminDeleteReview'
+  | 'adminUnpublishTutor'
+> {
+  const unsupported = (): never => {
+    throw new DomainError(
+      DomainErrorCode.INTERNAL,
+      'Admin tools are not available on the Amplify Gen 2 backend. Run the app against the REST backend (VITE_DATA_MODE=rest) or demo mode.',
+    );
+  };
+
+  return {
+    adminGetOverview: unsupported,
+    adminListUsers: unsupported,
+    adminGetUser: unsupported,
+    adminSetUserStatus: unsupported,
+    adminSetUserRoles: unsupported,
+    adminListSessions: unsupported,
+    adminListReviews: unsupported,
+    adminDeleteReview: unsupported,
+    adminUnpublishTutor: unsupported,
+  };
+}
 
 /** Exposed for the rating consistency check in the profile view. */
 export { computeRatingAggregate };

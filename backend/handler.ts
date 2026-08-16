@@ -20,16 +20,22 @@ import { ConditionalCheckFailedException } from '@aws-sdk/client-dynamodb';
 
 import { DomainError, DomainErrorCode, isDomainError } from '../shared/domain/errors';
 import {
+  assertCanAssignRoles,
   assertCanBook,
   assertCanMessage,
+  assertCanModerateReview,
   assertCanReview,
+  assertCanSetAccountStatus,
+  assertIsAdmin,
   assertIsParticipant,
   assertIsTutorOf,
   assertNoOverlap,
+  assertNotSuspended,
   assertSlotDeletable,
   assertTransition,
   computeRatingAggregate,
   isDiscoverable,
+  sanitiseSelfAssignedRoles,
   validateDisplayName,
   validateHourlyRate,
   validateMessageBody,
@@ -38,9 +44,15 @@ import {
   LIMITS,
 } from '../shared/domain/rules';
 import { buildListing } from '../shared/domain/listing';
-import { isValidSubjectId } from '../shared/domain/subjects';
+import { getSubjectName, isValidSubjectId } from '../shared/domain/subjects';
 import type {
   AcademicLevel,
+  AccountStatus,
+  AdminOverview,
+  AdminReviewRow,
+  AdminSessionRow,
+  AdminUserDetail,
+  AdminUserSummary,
   AppNotification,
   AvailabilitySlot,
   Message,
@@ -61,6 +73,7 @@ import {
   patchItem,
   putItem,
   queryAll,
+  scanAll,
 } from './db';
 
 // ---------------------------------------------------------------------------
@@ -191,6 +204,7 @@ async function ensureUser(caller: Caller): Promise<UserRecord> {
     // Everyone can learn. The tutor role is added when a tutor profile is saved,
     // or explicitly from the profile screen.
     roles: ['STUDENT'],
+    status: 'ACTIVE',
     institution: null,
     bio: null,
     createdAt: nowIso(),
@@ -402,17 +416,13 @@ async function updateMyProfile(caller: Caller, body: Record<string, unknown>) {
     changes.bio = bio || null;
   }
   if (body.roles !== undefined) {
-    const roles = (body.roles as UserRole[]).filter(
-      (role) => role === 'STUDENT' || role === 'TUTOR',
-    );
-    if (roles.length === 0) {
-      throw new DomainError(
-        DomainErrorCode.VALIDATION,
-        'You need at least one role on your account.',
-        'roles',
-      );
-    }
-    changes.roles = roles;
+    // PRIVILEGE ESCALATION GUARD. This endpoint takes a roles array from the
+    // request body, so it must never be able to grant ADMIN. Any existing admin
+    // role the user already holds is preserved separately below.
+    const selfRoles = sanitiseSelfAssignedRoles(body.roles);
+    changes.roles = user.roles.includes('ADMIN')
+      ? [...new Set<UserRole>([...selfRoles, 'ADMIN'])]
+      : selfRoles;
   }
 
   const updated = await patchItem<UserRecord>(TABLES.users, user.id, changes);
@@ -908,6 +918,306 @@ async function sendMessage(
   return message;
 }
 
+// ---------------------------------------------------------------------------
+// Administration
+//
+// Every handler below begins by loading the caller's OWN record from DynamoDB and
+// checking it carries the ADMIN role. The role is never taken from the request, from
+// a header, or from a client-supplied claim: it is read from the database using the
+// user id inside the Cognito-verified token. A forged request cannot fake it.
+// ---------------------------------------------------------------------------
+
+/** Loads the caller and asserts they are an active administrator. */
+async function requireAdmin(caller: Caller): Promise<UserRecord> {
+  const actor = await ensureUser(caller);
+  assertNotSuspended(actor);
+  assertIsAdmin(actor);
+  return actor;
+}
+
+function statusOf(user: UserRecord): AccountStatus {
+  // Records predating the field are active.
+  return user.status === 'SUSPENDED' ? 'SUSPENDED' : 'ACTIVE';
+}
+
+async function adminOverview(caller: Caller): Promise<AdminOverview> {
+  await requireAdmin(caller);
+
+  const [users, tutorProfiles, sessions, reviews, slots] = await Promise.all([
+    scanAll<UserRecord>({ TableName: TABLES.users }),
+    scanAll<TutorProfileRecord>({ TableName: TABLES.tutorProfiles }),
+    scanAll<SessionRecord>({ TableName: TABLES.sessions }),
+    scanAll<Review>({ TableName: TABLES.reviews }),
+    scanAll<AvailabilitySlot>({ TableName: TABLES.slots }),
+  ]);
+
+  const now = Date.now();
+  const byStatus = (status: string) =>
+    sessions.filter((session) => session.status === status).length;
+
+  const ratings = reviews.map((review) => review.rating);
+  const { ratingAvg } = computeRatingAggregate(ratings);
+
+  return {
+    totalUsers: users.length,
+    students: users.filter((user) => user.roles?.includes('STUDENT')).length,
+    tutors: users.filter((user) => user.roles?.includes('TUTOR')).length,
+    admins: users.filter((user) => user.roles?.includes('ADMIN')).length,
+    suspended: users.filter((user) => statusOf(user) === 'SUSPENDED').length,
+    publishedTutors: tutorProfiles.filter((profile) => Boolean(profile.publishedFlag)).length,
+    unpublishedTutors: tutorProfiles.filter((profile) => !profile.publishedFlag).length,
+    totalSessions: sessions.length,
+    pendingSessions: byStatus('PENDING'),
+    confirmedSessions: byStatus('CONFIRMED'),
+    completedSessions: byStatus('COMPLETED'),
+    cancelledSessions: byStatus('CANCELLED'),
+    declinedSessions: byStatus('DECLINED'),
+    upcomingSessions: sessions.filter(
+      (session) => session.status === 'CONFIRMED' && Date.parse(session.startAt) >= now,
+    ).length,
+    totalReviews: reviews.length,
+    averageRating: ratingAvg,
+    openSlots: slots.filter(
+      (slot) => slot.status === 'OPEN' && Date.parse(slot.startAt) > now,
+    ).length,
+  };
+}
+
+async function adminListUsers(caller: Caller): Promise<AdminUserSummary[]> {
+  await requireAdmin(caller);
+
+  const [users, tutorProfiles, sessions] = await Promise.all([
+    scanAll<UserRecord>({ TableName: TABLES.users }),
+    scanAll<TutorProfileRecord>({ TableName: TABLES.tutorProfiles }),
+    scanAll<SessionRecord>({ TableName: TABLES.sessions }),
+  ]);
+
+  const profileByUser = new Map(tutorProfiles.map((profile) => [profile.userId, profile]));
+  const sessionCount = new Map<string, number>();
+  for (const session of sessions) {
+    sessionCount.set(session.studentUserId, (sessionCount.get(session.studentUserId) ?? 0) + 1);
+    sessionCount.set(session.tutorUserId, (sessionCount.get(session.tutorUserId) ?? 0) + 1);
+  }
+
+  return users
+    .map((user) => {
+      const profile = profileByUser.get(user.id);
+      return {
+        id: user.id,
+        userId: user.userId ?? user.id,
+        displayName: user.displayName,
+        // Email is shown to administrators only. It is never served by any
+        // /public route.
+        email: user.email,
+        roles: (user.roles ?? []) as UserRole[],
+        status: statusOf(user),
+        institution: user.institution ?? null,
+        createdAt: user.createdAt,
+        tutorProfileId: profile?.id ?? null,
+        isPublishedTutor: Boolean(profile?.publishedFlag),
+        ratingAvg: profile?.ratingAvg ?? null,
+        ratingCount: profile?.ratingCount ?? 0,
+        sessionCount: sessionCount.get(user.id) ?? 0,
+      };
+    })
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+}
+
+async function adminGetUser(caller: Caller, userId: string): Promise<AdminUserDetail> {
+  await requireAdmin(caller);
+
+  const user = await getItem<UserRecord>(TABLES.users, userId);
+  if (!user) throw new DomainError(DomainErrorCode.NOT_FOUND, 'That user does not exist.');
+
+  const profile = await getTutorProfileByUserId(user.id);
+  const [asStudent, asTutor, reviewsWritten, reviewsReceived] = await Promise.all([
+    sessionsForStudent(user.id),
+    sessionsForTutor(user.id),
+    scanAll<Review>({
+      TableName: TABLES.reviews,
+      FilterExpression: 'studentUserId = :u',
+      ExpressionAttributeValues: { ':u': user.id },
+    }),
+    profile ? reviewsForTutorProfile(profile.id) : Promise.resolve([]),
+  ]);
+
+  return {
+    id: user.id,
+    userId: user.userId ?? user.id,
+    displayName: user.displayName,
+    email: user.email,
+    roles: (user.roles ?? []) as UserRole[],
+    status: statusOf(user),
+    institution: user.institution ?? null,
+    bio: user.bio ?? null,
+    createdAt: user.createdAt,
+    tutorProfileId: profile?.id ?? null,
+    isPublishedTutor: Boolean(profile?.publishedFlag),
+    ratingAvg: profile?.ratingAvg ?? null,
+    ratingCount: profile?.ratingCount ?? 0,
+    sessionCount: asStudent.length + asTutor.length,
+    tutorProfile: profile ?? null,
+    sessionsAsStudent: asStudent.length,
+    sessionsAsTutor: asTutor.length,
+    reviewsWritten: reviewsWritten.length,
+    reviewsReceived: reviewsReceived.length,
+  };
+}
+
+async function adminSetUserStatus(
+  caller: Caller,
+  userId: string,
+  body: Record<string, unknown>,
+) {
+  const actor = await requireAdmin(caller);
+  const target = await getItem<UserRecord>(TABLES.users, userId);
+  if (!target) throw new DomainError(DomainErrorCode.NOT_FOUND, 'That user does not exist.');
+
+  const nextStatus: AccountStatus = body.status === 'SUSPENDED' ? 'SUSPENDED' : 'ACTIVE';
+
+  assertCanSetAccountStatus({
+    actor: { userId: actor.id, roles: actor.roles as UserRole[], status: statusOf(actor) },
+    target: {
+      userId: target.id,
+      roles: (target.roles ?? []) as UserRole[],
+      status: statusOf(target),
+    },
+    nextStatus,
+  });
+
+  await patchItem(TABLES.users, userId, { status: nextStatus, updatedAt: nowIso() });
+
+  // Suspending a tutor must also take them out of search, or students keep
+  // requesting sessions from an account that can no longer respond.
+  if (nextStatus === 'SUSPENDED') {
+    const profile = await getTutorProfileByUserId(userId);
+    if (profile) {
+      await patchItem(TABLES.tutorProfiles, profile.id, {
+        publishedFlag: null,
+        isPublished: false,
+        updatedAt: nowIso(),
+      });
+    }
+  }
+
+  return adminGetUser(caller, userId);
+}
+
+async function adminSetUserRoles(
+  caller: Caller,
+  userId: string,
+  body: Record<string, unknown>,
+) {
+  const actor = await requireAdmin(caller);
+  const target = await getItem<UserRecord>(TABLES.users, userId);
+  if (!target) throw new DomainError(DomainErrorCode.NOT_FOUND, 'That user does not exist.');
+
+  const nextRoles = assertCanAssignRoles({
+    actor: { userId: actor.id, roles: actor.roles as UserRole[], status: statusOf(actor) },
+    targetUserId: userId,
+    nextRoles: (body.roles as UserRole[]) ?? [],
+  });
+
+  await patchItem(TABLES.users, userId, { roles: nextRoles, updatedAt: nowIso() });
+
+  // Losing the tutor role must remove the profile from discovery too.
+  if (!nextRoles.includes('TUTOR')) {
+    const profile = await getTutorProfileByUserId(userId);
+    if (profile?.publishedFlag) {
+      await patchItem(TABLES.tutorProfiles, profile.id, {
+        publishedFlag: null,
+        isPublished: false,
+        updatedAt: nowIso(),
+      });
+    }
+  }
+
+  return adminGetUser(caller, userId);
+}
+
+async function adminListSessions(caller: Caller): Promise<AdminSessionRow[]> {
+  await requireAdmin(caller);
+  const sessions = await scanAll<SessionRecord>({ TableName: TABLES.sessions });
+  return sessions
+    .map((session) => ({ ...session, subjectName: getSubjectName(session.subjectId) }))
+    .sort((a, b) => Date.parse(b.startAt) - Date.parse(a.startAt));
+}
+
+async function adminListReviews(caller: Caller): Promise<AdminReviewRow[]> {
+  await requireAdmin(caller);
+
+  const [reviews, tutorProfiles] = await Promise.all([
+    scanAll<Review & { subjectId?: string }>({ TableName: TABLES.reviews }),
+    scanAll<TutorProfileRecord>({ TableName: TABLES.tutorProfiles }),
+  ]);
+
+  const nameByProfile = new Map(
+    tutorProfiles.map((profile) => [profile.id, profile.displayName]),
+  );
+
+  return reviews
+    .map((review) => ({
+      ...review,
+      comment: review.comment ?? '',
+      tutorName: nameByProfile.get(review.tutorProfileId) ?? 'Unknown tutor',
+      subjectName: review.subjectId ? getSubjectName(review.subjectId) : 'Unknown subject',
+    }))
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+}
+
+/**
+ * Removes a review as moderation.
+ *
+ * The tutor's aggregate is recomputed from the reviews that remain, so the rating on
+ * their profile always equals the mean of the reviews a visitor can actually read.
+ * There is deliberately no endpoint for editing a review's rating.
+ */
+async function adminDeleteReview(caller: Caller, reviewId: string) {
+  const actor = await requireAdmin(caller);
+  assertCanModerateReview({
+    userId: actor.id,
+    roles: actor.roles as UserRole[],
+    status: statusOf(actor),
+  });
+
+  const review = await getItem<Review>(TABLES.reviews, reviewId);
+  if (!review) {
+    throw new DomainError(DomainErrorCode.NOT_FOUND, 'That review no longer exists.');
+  }
+
+  await deleteItem(TABLES.reviews, reviewId);
+  await refreshRatingAggregate(review.tutorProfileId);
+
+  // Frees the student to leave a replacement review for that session.
+  const session = await getItem<SessionRecord>(TABLES.sessions, review.sessionId);
+  if (session) {
+    await patchItem(TABLES.sessions, review.sessionId, {
+      hasReview: false,
+      updatedAt: nowIso(),
+    });
+  }
+
+  return { ok: true };
+}
+
+/** Takes a tutor profile out of search without deleting anything. */
+async function adminUnpublishTutor(caller: Caller, tutorProfileId: string) {
+  await requireAdmin(caller);
+
+  const profile = await getItem<TutorProfileRecord>(TABLES.tutorProfiles, tutorProfileId);
+  if (!profile) {
+    throw new DomainError(DomainErrorCode.NOT_FOUND, 'That tutor profile does not exist.');
+  }
+
+  await patchItem(TABLES.tutorProfiles, tutorProfileId, {
+    publishedFlag: null,
+    isPublished: false,
+    updatedAt: nowIso(),
+  });
+
+  return { ok: true };
+}
+
 async function listNotifications(caller: Caller) {
   const items = await queryAll<AppNotification>({
     TableName: TABLES.notifications,
@@ -955,6 +1265,61 @@ export const handler = async (
     // ----- Authenticated ----------------------------------------------------
     const caller = requireCaller(event);
     const body = parseBody<Record<string, unknown>>(event);
+
+    // ----- Admin ------------------------------------------------------------
+    // Placed before the suspension guard only because every admin handler runs
+    // requireAdmin(), which performs the same check itself.
+    if (segments[0] === 'admin') {
+      const section = segments[1];
+
+      if (section === 'overview' && method === 'GET') {
+        return ok(await adminOverview(caller));
+      }
+
+      if (section === 'users') {
+        const targetId = segments[2];
+        if (method === 'GET' && !targetId) return ok(await adminListUsers(caller));
+        if (method === 'GET' && targetId) return ok(await adminGetUser(caller, targetId));
+        if (method === 'POST' && targetId && segments[3] === 'status') {
+          return ok(await adminSetUserStatus(caller, targetId, body));
+        }
+        if (method === 'POST' && targetId && segments[3] === 'roles') {
+          return ok(await adminSetUserRoles(caller, targetId, body));
+        }
+      }
+
+      if (section === 'sessions' && method === 'GET') {
+        return ok(await adminListSessions(caller));
+      }
+
+      if (section === 'reviews') {
+        if (method === 'GET') return ok(await adminListReviews(caller));
+        if (method === 'DELETE' && segments[2]) {
+          return ok(await adminDeleteReview(caller, segments[2]));
+        }
+      }
+
+      if (
+        section === 'tutors' &&
+        method === 'POST' &&
+        segments[2] &&
+        segments[3] === 'unpublish'
+      ) {
+        return ok(await adminUnpublishTutor(caller, segments[2]));
+      }
+
+      // Same opaque response as a non-admin gets, so probing reveals nothing.
+      throw new DomainError(DomainErrorCode.NOT_FOUND, 'Not found.');
+    }
+
+    /*
+     * Suspension is enforced here, on EVERY authenticated request, rather than only
+     * at sign-in. A Cognito access token remains valid for its full lifetime, so a
+     * user suspended mid-session would otherwise keep working until it expired.
+     * Costs one GetItem per request, which is the right trade for an authorisation
+     * decision.
+     */
+    assertNotSuspended(await ensureUser(caller));
 
     if (segments[0] === 'me') {
       const sub = segments[1];

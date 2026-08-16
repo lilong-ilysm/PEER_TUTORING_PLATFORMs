@@ -20,7 +20,7 @@ import type {
   TutorProfile,
 } from '../../../../shared/domain/types';
 import { hashPassword, newId, newSalt, type LocalAccount, type LocalDb } from './db';
-import { DEMO_PASSWORD } from '../../config';
+import { ADMIN_DEMO_EMAIL, DEMO_PASSWORD } from '../../config';
 
 export { DEMO_PASSWORD };
 
@@ -224,6 +224,26 @@ export async function seedDatabase(db: LocalDb): Promise<void> {
   const passwordHash = await hashPassword(DEMO_PASSWORD, salt);
 
   // Demo learner account.
+  // Demo administrator. Exists ONLY in demo mode, in this browser. On AWS no admin
+  // exists until you promote a real account, because seeding a privileged account
+  // into a deployed database would be a security hole rather than a convenience.
+  const adminId = newId();
+  const adminSalt = newSalt();
+  db.accounts.push({
+    id: adminId,
+    userId: adminId,
+    displayName: 'Platform Admin',
+    email: ADMIN_DEMO_EMAIL,
+    roles: ['ADMIN'],
+    status: 'ACTIVE',
+    institution: 'PeerTutor operations',
+    bio: null,
+    createdAt: now,
+    passwordHash: await hashPassword(DEMO_PASSWORD, adminSalt),
+    salt: adminSalt,
+    seeded: true,
+  });
+
   const studentId = newId();
   db.accounts.push({
     id: studentId,

@@ -3,9 +3,17 @@ import { AppShell } from './components/layout/AppShell';
 import { DashboardLayout } from './components/layout/DashboardLayout';
 import {
   RedirectIfAuthenticated,
+  RequireAdmin,
   RequireAuth,
   RequireTutor,
 } from './components/layout/RouteGuards';
+import { AdminLayout } from './components/admin/AdminLayout';
+import { AdminOverviewPage } from './pages/admin/AdminOverview';
+import { AdminUsersPage } from './pages/admin/AdminUsers';
+import { AdminTutorsPage } from './pages/admin/AdminTutors';
+import { AdminSessionsPage } from './pages/admin/AdminSessions';
+import { AdminReviewsPage } from './pages/admin/AdminReviews';
+import { AdminSubjectsPage } from './pages/admin/AdminSubjects';
 
 import { LandingPage } from './pages/Landing';
 import { TutorSearchPage } from './pages/TutorSearch';
@@ -26,6 +34,23 @@ import { DashboardNotificationsPage } from './pages/dashboard/Notifications';
 export function App() {
   return (
     <Routes>
+      {/*
+        Admin sits OUTSIDE the public AppShell: it has its own chrome, and the public
+        marketing header and bottom tab bar are meaningless in an internal tool.
+        RequireAdmin gates rendering; the server independently authorises every
+        request behind these screens.
+      */}
+      <Route element={<RequireAdmin />}>
+        <Route path="/admin" element={<AdminLayout />}>
+          <Route index element={<AdminOverviewPage />} />
+          <Route path="users" element={<AdminUsersPage />} />
+          <Route path="tutors" element={<AdminTutorsPage />} />
+          <Route path="sessions" element={<AdminSessionsPage />} />
+          <Route path="reviews" element={<AdminReviewsPage />} />
+          <Route path="subjects" element={<AdminSubjectsPage />} />
+        </Route>
+      </Route>
+
       <Route element={<AppShell />}>
         {/* Public: discovery is open, which is what lets a guest evaluate the
             platform before committing to an account. */}
@@ -69,6 +94,9 @@ export function App() {
           </Route>
         </Route>
 
+        {/* Explicit target for RequireAdmin, so a non-admin hitting /admin lands on
+            a normal 404 rather than being told an admin area exists. */}
+        <Route path="/not-found" element={<NotFoundPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

@@ -88,3 +88,13 @@ export const CURRENCY = 'GBP';
  * seed data does not exist at all.
  */
 export const DEMO_PASSWORD = 'Password123';
+
+/**
+ * Email of the seeded demo administrator.
+ *
+ * This is NOT a credential: it identifies an account that exists only in demo mode,
+ * in the visitor's own browser, alongside the other seed data. No administrator is
+ * ever seeded into a deployed AWS database — the first real admin is created by
+ * promoting an existing account, which requires direct database access.
+ */
+export const ADMIN_DEMO_EMAIL = 'admin@peertutor.test';
