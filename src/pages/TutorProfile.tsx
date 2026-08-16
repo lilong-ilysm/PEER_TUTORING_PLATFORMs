@@ -167,7 +167,7 @@ export function TutorProfilePage() {
       <div className="mt-6 flex flex-col gap-6 lg:grid lg:grid-cols-[minmax(0,1fr)_21rem] lg:items-start">
         <section
           aria-labelledby="about-heading"
-          className="order-1 min-w-0 lg:col-start-1 lg:row-start-1"
+          className="min-w-0 lg:col-start-1 lg:row-start-1"
         >
           <SectionHeading title="About" id="about-heading" />
           <Card>
@@ -179,7 +179,7 @@ export function TutorProfilePage() {
 
         <section
           aria-labelledby="subjects-heading"
-          className="order-2 min-w-0 lg:col-start-1 lg:row-start-2"
+          className="min-w-0 lg:col-start-1 lg:row-start-2"
         >
           <SectionHeading title="Subjects and levels" id="subjects-heading" />
             <Card>
@@ -210,9 +210,79 @@ export function TutorProfilePage() {
           </Card>
         </section>
 
+        {/*
+          Availability sits THIRD IN THE DOM, before reviews, deliberately.
+
+          An earlier version placed it after reviews and relied on the CSS `order`
+          property to move it up visually on mobile. That is a visual-only reorder:
+          screen reader traversal and keyboard tab order both follow DOM order, so
+          assistive-technology and keyboard users still had to pass every review
+          before reaching the booking control. Ordering the DOM correctly and letting
+          explicit grid placement handle the desktop column keeps the visual order,
+          the reading order and the focus order identical at every breakpoint.
+        */}
+        <aside
+          id="availability"
+          className="min-w-0 scroll-mt-24 lg:col-start-2 lg:row-span-3 lg:row-start-1 lg:self-start lg:sticky lg:top-24"
+        >
+          <Card>
+            <CardBody>
+              <h2 className="flex items-center gap-2 text-lg">
+                <span className="text-ink-400" aria-hidden="true">
+                  <CalendarIcon />
+                </span>
+                Availability
+              </h2>
+
+              {isOwnProfile ? (
+                <div className="mt-3 rounded-lg border border-ink-200 bg-ink-50 p-3 text-sm text-ink-700">
+                  <p>This is how your profile looks to students.</p>
+                  <ButtonLink
+                    to="/dashboard/availability"
+                    variant="secondary"
+                    size="sm"
+                    className="mt-2"
+                  >
+                    Manage availability
+                  </ButtonLink>
+                </div>
+              ) : null}
+
+              <div className="mt-3">
+                {slotsState.loading ? (
+                  // Skeleton mirrors the row layout so nothing jumps on load.
+                  <div className="space-y-2">
+                    <Skeleton className="h-4 w-32" />
+                    <Skeleton className="h-14 rounded-xl" />
+                    <Skeleton className="h-14 rounded-xl" />
+                    <Skeleton className="h-14 rounded-xl" />
+                  </div>
+                ) : slotsState.error ? (
+                  <ErrorState message={slotsState.error} onRetry={slotsState.reload} />
+                ) : (
+                  <AvailabilityPicker
+                    slots={slotsState.data ?? []}
+                    selectedSlotId={selectedSlot?.id ?? null}
+                    onSelect={handleBookIntent}
+                    disabled={isOwnProfile}
+                  />
+                )}
+              </div>
+
+              {!isOwnProfile && listing.openSlotCount > 0 ? (
+                <p className="mt-3 border-t border-ink-200 pt-3 text-sm text-ink-600">
+                  {isAuthenticated
+                    ? 'Pick a time to send a request. Nothing is scheduled until the tutor confirms.'
+                    : 'Pick a time to continue. You will be asked to sign in first.'}
+                </p>
+              ) : null}
+            </CardBody>
+          </Card>
+        </aside>
+
         <section
           aria-labelledby="reviews-heading"
-          className="order-4 min-w-0 lg:col-start-1 lg:row-start-3"
+          className="min-w-0 lg:col-start-1 lg:row-start-3"
         >
           <SectionHeading
             title={`Reviews${displayRating.ratingCount > 0 ? ` (${displayRating.ratingCount})` : ''}`}
@@ -257,72 +327,6 @@ export function TutorProfilePage() {
               </ul>
             )}
         </section>
-
-        {/*
-          Third on mobile (directly after the tutor's details), sticky right-hand
-          column from `lg` up. `row-span-3` gives the sticky element room to travel
-          alongside the whole left column.
-        */}
-        <aside
-          id="availability"
-          className="order-3 min-w-0 scroll-mt-24 lg:col-start-2 lg:row-span-3 lg:row-start-1 lg:self-start lg:sticky lg:top-24"
-        >
-          <Card>
-            <CardBody>
-              <div className="flex items-baseline justify-between gap-2">
-                <h2 className="flex items-center gap-2 text-lg">
-                  <span className="text-ink-400" aria-hidden="true">
-                    <CalendarIcon />
-                  </span>
-                  Availability
-                </h2>
-              </div>
-
-              {isOwnProfile ? (
-                <div className="mt-3 rounded-lg border border-ink-200 bg-ink-50 p-3 text-sm text-ink-700">
-                  <p>This is how your profile looks to students.</p>
-                  <ButtonLink
-                    to="/dashboard/availability"
-                    variant="secondary"
-                    size="sm"
-                    className="mt-2"
-                  >
-                    Manage availability
-                  </ButtonLink>
-                </div>
-              ) : null}
-
-              <div className="mt-3">
-                {slotsState.loading ? (
-                  // Skeleton mirrors the new row layout so nothing jumps on load.
-                  <div className="space-y-2">
-                    <Skeleton className="h-4 w-32" />
-                    <Skeleton className="h-14 rounded-xl" />
-                    <Skeleton className="h-14 rounded-xl" />
-                    <Skeleton className="h-14 rounded-xl" />
-                  </div>
-                ) : slotsState.error ? (
-                  <ErrorState message={slotsState.error} onRetry={slotsState.reload} />
-                ) : (
-                  <AvailabilityPicker
-                    slots={slotsState.data ?? []}
-                    selectedSlotId={selectedSlot?.id ?? null}
-                    onSelect={handleBookIntent}
-                    disabled={isOwnProfile}
-                  />
-                )}
-              </div>
-
-              {!isOwnProfile && listing.openSlotCount > 0 ? (
-                <p className="mt-3 border-t border-ink-200 pt-3 text-sm text-ink-600">
-                  {isAuthenticated
-                    ? 'Pick a time to send a request. Nothing is scheduled until the tutor confirms.'
-                    : 'Pick a time to continue. You will be asked to sign in first.'}
-                </p>
-              ) : null}
-            </CardBody>
-          </Card>
-        </aside>
       </div>
 
       <BookingModal

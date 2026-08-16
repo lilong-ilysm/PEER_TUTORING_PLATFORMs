@@ -8,7 +8,9 @@ export default defineConfig({
     },
   },
   test: {
+    // Default to node; files that need a DOM opt in with a
+    // `// @vitest-environment jsdom` docblock.
     environment: 'node',
-    include: ['src/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
   },
 });
